@@ -1,8 +1,7 @@
 from typing import Any
 
-from openai import OpenAI
-
-from ..config import settings
+from ..config import Settings
+from .llm import configured_api_key, generate_text, missing_key_message
 
 
 COMMON_GUARDRAILS = (
@@ -89,29 +88,24 @@ def _format_transcript(segments: list[dict[str, Any]]) -> str:
 
 
 def generate_summary(segments: list[dict[str, Any]], preset: str = "short") -> str:
-    if not settings.openai_api_key:
-        return "OPENAI_API_KEY is not configured. Summary generation skipped."
+    active_settings = Settings()
+    if not configured_api_key(active_settings):
+        return f"{missing_key_message(active_settings)} Summary generation skipped."
 
     transcript = _format_transcript(segments)
     if not transcript.strip():
         return "No transcript text was generated."
 
     preset_config = SUMMARY_PRESETS.get(preset, SUMMARY_PRESETS["short"])
-    client = OpenAI(api_key=settings.openai_api_key)
-    create_args: dict[str, Any] = {
-        "model": settings.openai_model,
-        "instructions": (
+    return generate_text(
+        settings=active_settings,
+        instructions=(
             "You create meeting notes from transcripts. "
             f"Use this preset: {preset_config['label']}. "
             f"{preset_config['instructions']} "
             "If decisions or action items are not present, say 'None captured'."
         ),
-        "input": transcript[:60000],
-        "max_output_tokens": settings.summary_max_output_tokens,
-        "timeout": settings.summary_timeout_seconds,
-    }
-    if settings.openai_model.startswith("gpt-5"):
-        create_args["reasoning"] = {"effort": "minimal"}
-
-    response = client.responses.create(**create_args)
-    return response.output_text.strip()
+        input_text=transcript[:60000],
+        max_output_tokens=active_settings.summary_max_output_tokens,
+        timeout=active_settings.summary_timeout_seconds,
+    )

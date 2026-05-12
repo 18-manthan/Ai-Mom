@@ -7,8 +7,8 @@ Local-first meeting transcription MVP.
 - Backend: FastAPI, SQLite
 - Transcription: faster-whisper on CPU with `int8`
 - Speaker labels: local token-free audio feature clustering
-- Notes: OpenAI API, generated on demand from selectable presets
-- Cleanup: OpenAI API, keeps raw transcript and adds a cleaned transcript view
+- Notes: OpenAI or Groq API, generated on demand from selectable presets
+- Cleanup: OpenAI or Groq API, keeps raw transcript and adds a cleaned transcript view
 - Frontend: React + Vite
 
 ## Requirements
@@ -16,7 +16,7 @@ Local-first meeting transcription MVP.
 - Python 3.11+
 - Node.js 20+
 - `ffmpeg` installed and available on PATH
-- `OPENAI_API_KEY` for summaries
+- `OPENAI_API_KEY` or `GROQ_API_KEY` for cleanup and summaries
 
 No Hugging Face token and no GPU are required.
 
@@ -29,7 +29,24 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Set `OPENAI_API_KEY` in `.env`.
+Set your AI provider and API key in `.env`.
+
+OpenAI:
+
+```bash
+AI_PROVIDER=openai
+OPENAI_API_KEY=your_openai_key
+OPENAI_MODEL=gpt-5-mini
+```
+
+Groq:
+
+```bash
+AI_PROVIDER=groq
+GROQ_API_KEY=your_groq_key
+GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+```
 
 By default, generated runtime files stay under `backend/`:
 
@@ -111,6 +128,18 @@ BACKEND_PORT=8001 FRONTEND_PORT=5174 ./start.sh
 OPEN_UI=false ./start.sh
 ```
 
+## Google Meet Live Capture
+
+MOM includes a local Chrome/Edge extension scaffold for botless Google Meet capture.
+
+1. Run MOM with `./start.sh`.
+2. Open `chrome://extensions`.
+3. Enable **Developer mode**.
+4. Click **Load unpacked** and select the `extension/` folder.
+5. Join Google Meet in the browser, turn on captions, then click **Start** in the MOM panel.
+
+See `extension/README.md` for extension notes.
+
 ## API
 
 - `POST /api/meetings` uploads MP3, WAV, MP4, or M4A
@@ -120,6 +149,30 @@ OPEN_UI=false ./start.sh
 - `POST /api/meetings/{id}/summary` starts AI notes generation after transcription. Body: `{"preset":"short"}`
 - `DELETE /api/meetings/{id}` deletes a meeting and its generated files
 
+### Live Meeting API
+
+Phase 1 for botless capture lets a browser extension send live caption segments into MOM:
+
+- `POST /api/live-meetings` starts a live meeting. Body: `{"title":"Weekly Sync","source":"google_meet"}`
+- `POST /api/live-meetings/{id}/segments` appends or updates a caption segment.
+- `POST /api/live-meetings/{id}/finish` marks the live meeting as completed so cleanup and notes can run.
+
+Segment body:
+
+```json
+{
+  "speaker": "Amit",
+  "text": "Let's finalize the roadmap today.",
+  "start": 12.4,
+  "end": 16.8,
+  "external_id": "caption-line-123",
+  "source": "google_meet",
+  "is_final": true
+}
+```
+
+`external_id` is optional, but useful for live captions because meeting apps often update the same caption line while someone is still speaking.
+
 ## Notes
 
-The Phase 1 speaker labeling is fully local and token-free. It clusters audio features around transcript segments, so it is useful for an MVP but not as accurate as Pyannote-style diarization. Cleanup and notes generation are intentionally manual: upload and transcription finish first, then click **AI Cleanup** or choose a notes preset and click **Generate Notes** when you want to spend an OpenAI API call. Notes prefer the cleaned transcript when available.
+The Phase 1 speaker labeling is fully local and token-free. It clusters audio features around transcript segments, so it is useful for an MVP but not as accurate as Pyannote-style diarization. Cleanup and notes generation are intentionally manual: upload and transcription finish first, then click **AI Cleanup** or choose a notes preset and click **Generate Notes** when you want to spend an AI API call. Notes prefer the cleaned transcript when available.

@@ -3,9 +3,14 @@
 __pycache__/
 *.pyc
 mom.db
+backend/mom.db
 uploads/*
 transcripts/*
 !uploads/.gitkeep
 !transcripts/.gitkeep
+backend/uploads/*
+backend/transcripts/*
+!backend/uploads/.gitkeep
+!backend/transcripts/.gitkeep
 frontend/node_modules/
 frontend/dist/

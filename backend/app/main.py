@@ -12,6 +12,7 @@ from .config import settings
 from .db import get_db, init_db
 from .models import Meeting
 from .services.audio import validate_media_file
+from .services.live import append_live_segment, finish_live_meeting, start_live_meeting
 from .services.processor import process_cleanup, process_meeting, process_summary
 
 
@@ -21,9 +22,30 @@ app = FastAPI(title="MOM AI Meeting Transcription")
 class SummaryRequest(BaseModel):
     preset: str = "short"
 
+
+class LiveMeetingStartRequest(BaseModel):
+    title: str | None = None
+    source: str = "google_meet"
+
+
+class LiveSegmentRequest(BaseModel):
+    text: str
+    speaker: str = "Speaker"
+    start: float | None = None
+    end: float | None = None
+    external_id: str | None = None
+    source: str | None = None
+    is_final: bool = True
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=[
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "https://meet.google.com",
+    ],
+    allow_origin_regex=r"chrome-extension://.*",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -80,6 +102,18 @@ def _delete_file(path_value: str | None) -> None:
         resolved.unlink(missing_ok=True)
 
 
+def _load_transcript(path: Path) -> dict:
+    text = path.read_text(encoding="utf-8")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        transcript, _ = json.JSONDecoder().raw_decode(text)
+        if isinstance(transcript, dict):
+            path.write_text(json.dumps(transcript, indent=2), encoding="utf-8")
+            return transcript
+        raise
+
+
 @app.get("/api/health")
 def health() -> dict:
     return {"status": "ok"}
@@ -119,6 +153,52 @@ def upload_meeting(
 def list_meetings(db: Session = Depends(get_db)) -> list[dict]:
     meetings = db.query(Meeting).order_by(Meeting.created_at.desc()).all()
     return [_meeting_payload(meeting) for meeting in meetings]
+
+
+@app.post("/api/live-meetings")
+def create_live_meeting(
+    request: LiveMeetingStartRequest | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    meeting = start_live_meeting(
+        db,
+        title=request.title if request else None,
+        source=request.source if request else "google_meet",
+    )
+    return _meeting_payload(meeting)
+
+
+@app.post("/api/live-meetings/{meeting_id}/segments")
+def add_live_segment(
+    meeting_id: int,
+    request: LiveSegmentRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    meeting = db.get(Meeting, meeting_id)
+    if meeting is None:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    try:
+        segment = append_live_segment(db, meeting, request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"meeting": _meeting_payload(meeting), "segment": segment}
+
+
+@app.post("/api/live-meetings/{meeting_id}/finish")
+def finish_live(
+    meeting_id: int,
+    db: Session = Depends(get_db),
+) -> dict:
+    meeting = db.get(Meeting, meeting_id)
+    if meeting is None:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    try:
+        meeting = finish_live_meeting(db, meeting)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _meeting_payload(meeting)
 
 
 @app.post("/api/meetings/{meeting_id}/summary")
@@ -184,7 +264,7 @@ def get_meeting(meeting_id: int, db: Session = Depends(get_db)) -> dict:
     if meeting.transcript_path:
         path = Path(meeting.transcript_path)
         if path.exists():
-            transcript = json.loads(path.read_text(encoding="utf-8"))
+            transcript = _load_transcript(path)
             payload.update(
                 {
                     "segments": transcript.get("segments", []),

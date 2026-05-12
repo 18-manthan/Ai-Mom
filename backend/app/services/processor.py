@@ -8,11 +8,6 @@ from sqlalchemy.orm import Session
 from ..config import settings
 from ..db import SessionLocal
 from ..models import Meeting
-from .audio import extract_wav
-from .cleanup import cleanup_segments
-from .diarization import assign_speakers
-from .transcription import transcribe
-from .summary import generate_summary
 
 
 def _set_status(db: Session, meeting: Meeting, status: str, error: str | None = None) -> None:
@@ -23,6 +18,10 @@ def _set_status(db: Session, meeting: Meeting, status: str, error: str | None = 
 
 
 def process_meeting(meeting_id: int) -> None:
+    from .audio import extract_wav
+    from .diarization import assign_speakers
+    from .transcription import transcribe
+
     db = SessionLocal()
     started_at = time.perf_counter()
     try:
@@ -102,6 +101,8 @@ def _set_cleanup_status(
 
 
 def process_cleanup(meeting_id: int) -> None:
+    from .cleanup import cleanup_segments
+
     db = SessionLocal()
     started_at = time.perf_counter()
     try:
@@ -141,6 +142,8 @@ def process_cleanup(meeting_id: int) -> None:
 
 
 def process_summary(meeting_id: int, preset: str = "short") -> None:
+    from .summary import generate_summary
+
     db = SessionLocal()
     started_at = time.perf_counter()
     try:

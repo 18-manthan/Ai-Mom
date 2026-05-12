@@ -15,6 +15,27 @@ OPEN_UI="${OPEN_UI:-true}"
 BACKEND_PID=""
 FRONTEND_PID=""
 CLEANED_UP="false"
+USE_SETSID="false"
+
+stop_service() {
+  local pid="$1"
+  local label="$2"
+
+  if [[ -z "$pid" ]] || ! kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+
+  if [[ "$USE_SETSID" == "true" ]]; then
+    kill -TERM -- "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then
+      echo "$label did not stop cleanly; forcing it down."
+      kill -KILL -- "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+    fi
+  else
+    kill -TERM "$pid" 2>/dev/null || true
+  fi
+}
 
 cleanup() {
   if [[ "$CLEANED_UP" == "true" ]]; then
@@ -24,12 +45,8 @@ cleanup() {
 
   echo
   echo "Stopping MOM services..."
-  if [[ -n "$FRONTEND_PID" ]] && kill -0 "$FRONTEND_PID" 2>/dev/null; then
-    kill "$FRONTEND_PID" 2>/dev/null || true
-  fi
-  if [[ -n "$BACKEND_PID" ]] && kill -0 "$BACKEND_PID" 2>/dev/null; then
-    kill "$BACKEND_PID" 2>/dev/null || true
-  fi
+  stop_service "$FRONTEND_PID" "Frontend"
+  stop_service "$BACKEND_PID" "Backend"
 }
 
 require_command() {
@@ -124,6 +141,10 @@ fi
 
 require_command npm
 
+if command -v setsid >/dev/null 2>&1; then
+  USE_SETSID="true"
+fi
+
 if [[ ! -d "$ROOT_DIR/frontend/node_modules" ]]; then
   echo "frontend/node_modules is missing. Run: cd frontend && npm install"
   exit 1
@@ -133,19 +154,33 @@ ensure_port_free "$BACKEND_HOST" "$BACKEND_PORT" "Backend"
 ensure_port_free "127.0.0.1" "$FRONTEND_PORT" "Frontend"
 
 echo "Starting MOM backend on http://${BACKEND_HOST}:${BACKEND_PORT}"
-"$PYTHON_BIN" -m uvicorn backend.app.main:app \
-  --reload \
-  --host "$BACKEND_HOST" \
-  --port "$BACKEND_PORT" &
+if [[ "$USE_SETSID" == "true" ]]; then
+  setsid "$PYTHON_BIN" -m uvicorn backend.app.main:app \
+    --reload \
+    --host "$BACKEND_HOST" \
+    --port "$BACKEND_PORT" &
+else
+  "$PYTHON_BIN" -m uvicorn backend.app.main:app \
+    --reload \
+    --host "$BACKEND_HOST" \
+    --port "$BACKEND_PORT" &
+fi
 BACKEND_PID="$!"
 
 wait_for_url "http://${BACKEND_HOST}:${BACKEND_PORT}/api/health" "Backend"
 
 echo "Starting MOM frontend on http://127.0.0.1:${FRONTEND_PORT}"
-VITE_API_BASE="$API_URL" npm --prefix frontend run dev -- \
-  --host "$FRONTEND_HOST" \
-  --port "$FRONTEND_PORT" \
-  --strictPort &
+if [[ "$USE_SETSID" == "true" ]]; then
+  setsid env VITE_API_BASE="$API_URL" npm --prefix frontend run dev -- \
+    --host "$FRONTEND_HOST" \
+    --port "$FRONTEND_PORT" \
+    --strictPort &
+else
+  VITE_API_BASE="$API_URL" npm --prefix frontend run dev -- \
+    --host "$FRONTEND_HOST" \
+    --port "$FRONTEND_PORT" \
+    --strictPort &
+fi
 FRONTEND_PID="$!"
 
 wait_for_url "$UI_URL" "Frontend"

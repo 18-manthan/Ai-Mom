@@ -2,12 +2,11 @@ import json
 import re
 from typing import Any
 
-from openai import OpenAI
+from ..config import Settings
+from .llm import configured_api_key, generate_text, missing_key_message
 
-from ..config import settings
 
-
-def _chunks(segments: list[dict[str, Any]], max_chars: int = 12000) -> list[list[dict[str, Any]]]:
+def _chunks(segments: list[dict[str, Any]], max_chars: int = 4500) -> list[list[dict[str, Any]]]:
     chunks: list[list[dict[str, Any]]] = []
     current: list[dict[str, Any]] = []
     current_chars = 0
@@ -40,33 +39,50 @@ def _parse_json_object(text: str) -> dict[str, Any]:
     return json.loads(cleaned)
 
 
+def _repair_json_response(text: str, active_settings: Settings) -> dict[str, Any]:
+    repaired = generate_text(
+        settings=active_settings,
+        instructions=(
+            "Repair malformed JSON. Return only valid JSON with this exact shape: "
+            "{\"segments\":[{\"index\":0,\"text\":\"cleaned text\"}]}. "
+            "Do not add explanations, markdown, or extra keys."
+        ),
+        input_text=text[:12000],
+        max_output_tokens=active_settings.cleanup_max_output_tokens,
+        timeout=active_settings.cleanup_timeout_seconds,
+        json_mode=True,
+    )
+    return _parse_json_object(repaired)
+
+
 def cleanup_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    if not settings.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY is not configured.")
+    active_settings = Settings()
+    if not configured_api_key(active_settings):
+        raise RuntimeError(missing_key_message(active_settings))
     if not segments:
         return []
 
-    client = OpenAI(api_key=settings.openai_api_key)
     cleaned_by_index: dict[int, str] = {}
 
     for chunk in _chunks(segments):
-        create_args: dict[str, Any] = {
-            "model": settings.openai_model,
-            "instructions": (
+        output_text = generate_text(
+            settings=active_settings,
+            instructions=(
                 "Clean meeting transcript segment text. Preserve meaning, timestamps, speaker labels, "
                 "and segment count. Fix obvious ASR mistakes, punctuation, casing, brand names, "
                 "speaker names, and technical terms. Do not add new facts. Return only JSON in this "
-                "shape: {\"segments\":[{\"index\":0,\"text\":\"cleaned text\"}]}."
+                "shape: {\"segments\":[{\"index\":0,\"text\":\"cleaned text\"}]}. "
+                "Use double quotes for all JSON strings. Do not return markdown or explanations."
             ),
-            "input": json.dumps({"segments": chunk}, ensure_ascii=False),
-            "max_output_tokens": settings.cleanup_max_output_tokens,
-            "timeout": settings.cleanup_timeout_seconds,
-        }
-        if settings.openai_model.startswith("gpt-5"):
-            create_args["reasoning"] = {"effort": "minimal"}
-
-        response = client.responses.create(**create_args)
-        payload = _parse_json_object(response.output_text)
+            input_text=json.dumps({"segments": chunk}, ensure_ascii=False),
+            max_output_tokens=active_settings.cleanup_max_output_tokens,
+            timeout=active_settings.cleanup_timeout_seconds,
+            json_mode=True,
+        )
+        try:
+            payload = _parse_json_object(output_text)
+        except json.JSONDecodeError:
+            payload = _repair_json_response(output_text, active_settings)
         for item in payload.get("segments", []):
             index = int(item["index"])
             text = str(item["text"]).strip()
