@@ -1,0 +1,792 @@
+{
+  "meeting_id": 1,
+  "original_filename": "resources_RC_Conversation_Sample.mp3",
+  "language": "en",
+  "language_probability": 0.9935,
+  "summary": "Situation Summary\n- A short meeting/presentation introduced RingCentral's AI APIs for conversational intelligence.\n- Participants: Tom (host), Samir (explains value of open platform/use cases), and Will (discusses API usage and integration).\n- The APIs and capabilities described are currently in beta and the team plans to work toward a general public release; they asked for feedback.\n\nWhat Matters Most (facts from the transcript)\n- AI for conversations includes more than speech-to-text and text-to-speech; it also supports interaction analysis, sentiment analysis, and emotional analysis.\n- Use case example: contact-center supervisors can use sentiment scoring (described as a pointer from 0 to 5) to understand call sentiment.\n- RingCentral supports two categories of APIs: audio-based APIs and text-based APIs.\n- Three popular conversational-intelligence APIs mentioned:\n  1. Speech-to-text: converts audio to text and can produce transcripts with punctuation for reporting.\n  2. Speaker diarization: identifies which speaker is speaking at which times (who spoke what).\n  3. Speaker identification: detects who is speaking; if the model is trained on a speaker\u2019s voice and provided a label (e.g., a name), the API can return that name (otherwise it will return generic labels such as Person A, Person B).\n- The presenters invited feedback from the audience.\n\nRisks (explicit or implied in transcript)\n- Uncertainty about availability: APIs are in beta and not yet generally available.\n- No technical, security, privacy, or compliance details were presented in the transcript (unclear / not captured).\n\nSuggested Next Moves (advice separated from transcript facts)\n- Collect targeted feedback from beta users about accuracy of transcripts, diarization, speaker identification, and sentiment scoring.\n- Define and communicate a timeline and criteria for GA (general availability) release to beta participants (if timelines/criteria exist, they were not stated in the transcript).\n- Document privacy, consent, and security considerations for speaker identification and voice model training before GA.\n\nBetter Questions to Ask (to clarify missing or uncertain details)\n- What are the specific evaluation metrics and accuracy targets for speech-to-text, diarization, speaker identification, and sentiment analysis?\n- How is speaker identification trained and what data/consent processes are required to train models on users\u2019 voices?\n- What privacy, compliance, and data-retention policies apply to recorded audio, transcripts, and derived sentiment/emotion data?\n- What are the expected integration patterns and supported platforms/environments for audio and text APIs?\n- What is the intended timeline and release plan from beta to GA?\n\nAction Items (facts only \u2014 tasks or commitments explicitly stated in the transcript)\n- None captured (the transcript asked for feedback and noted the APIs are in beta and will move toward GA, but no concrete action items, owners, deadlines, or decisions were recorded).\n\nTraceability note\n- All items above are drawn only from statements explicitly present in the provided transcript. Where details were not provided or were unclear (for example, timelines, technical implementation, or privacy processes), those gaps are called out rather than inferred.",
+  "segments": [
+    {
+      "start": 0.88,
+      "end": 7.66,
+      "text": "Hello everyone, my name is Tom and today I have with me two of my awesome colleagues and we can start by getting them introduced",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 8.2,
+      "end": 18.99,
+      "text": "Samir. Hey everyone, this is Samir and I help in articulating the value provided by our open platform and the plethora of use cases that can be supported",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 19.51,
+      "end": 22.02,
+      "text": "Let's go to the next one",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 22.18,
+      "end": 29.42,
+      "text": "Hi everyone, my name is Will and I talk about the how how do we use the APIs?",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 29.42,
+      "end": 36.42,
+      "text": "How do we integrate them? How do we deploy them go live in our production applications?",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 36.42,
+      "end": 44.71,
+      "text": "Awesome. Thanks guys. Today the topic is about RingCentral's AI APIs from conversational intelligence.",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 44.71,
+      "end": 53.1,
+      "text": "So let's get started. Question for Sameer. AI is very highly used acronym over the past 45 years, especially.",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 53.1,
+      "end": 59.1,
+      "text": "How do you understand it in context of conversations? What capabilities does it bring?",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 59.1,
+      "end": 63.33,
+      "text": "And how easy it is, is it to use?",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 63.33,
+      "end": 66.29,
+      "text": "Very well, Tom, you hit the nail on the head.",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 66.29,
+      "end": 70.27,
+      "text": "Yes, AI is a very, very highly used acronym for last,",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 70.27,
+      "end": 72.37,
+      "text": "I would say five to six years.",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 72.37,
+      "end": 76.01,
+      "text": "But when you think about AI in context of conversations,",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 76.01,
+      "end": 78.17,
+      "text": "like first thing that comes to the mind",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 78.17,
+      "end": 80.33,
+      "text": "is speech to text capability",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 80.33,
+      "end": 82.61,
+      "text": "or text to speech capabilities, right?",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 82.61,
+      "end": 85.53,
+      "text": "But I think it's much, much beyond that.",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 85.53,
+      "end": 88.61,
+      "text": "For example, you can do a lot of interaction analysis,",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 88.61,
+      "end": 94.61,
+      "text": "sentiment analysis and emotional analysis with these APIs that we offer. It means if you are in a",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 94.61,
+      "end": 100.05,
+      "text": "contact center kind of a use case where supervisor needs to understand what kind of calls are coming",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 100.05,
+      "end": 106.13,
+      "text": "in right from all the people around the world to understand the sentiment level they can simply",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 106.13,
+      "end": 112.61,
+      "text": "have a pointer 0 to 5 to figure out the calls coming in fall in what range to understand the",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 112.61,
+      "end": 114.95,
+      "text": "sentiment of those calls, right?",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 114.95,
+      "end": 117.51,
+      "text": "That's one of the biggest, biggest powers",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 117.51,
+      "end": 120.97,
+      "text": "that we gave through our AI APIs.",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 120.97,
+      "end": 123.49,
+      "text": "Wow, that is so interesting.",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 123.49,
+      "end": 126.05,
+      "text": "Next question I have here is for Will.",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 126.05,
+      "end": 129.89,
+      "text": "What are the different set of APIs that we just support today?",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 129.89,
+      "end": 133.17,
+      "text": "And how can you throw some light on the three of the top most",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 133.17,
+      "end": 136.65,
+      "text": "used conversational intelligence API use cases",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 136.65,
+      "end": 140.47,
+      "text": "across our portfolio of API products?",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 140.47,
+      "end": 141.79,
+      "text": "Yeah, great question.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 141.79,
+      "end": 144.89,
+      "text": "We support basically APIs at two categories.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 144.89,
+      "end": 147.77,
+      "text": "One, they're audio APIs,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 147.77,
+      "end": 151.11,
+      "text": "and the other set of APIs are based on text.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 151.11,
+      "end": 155.81,
+      "text": "And the three most popular APIs are,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 155.81,
+      "end": 157.53,
+      "text": "you can say the speech to text,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 157.53,
+      "end": 160.77,
+      "text": "because even audio gets converted into text,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 160.77,
+      "end": 165.43,
+      "text": "and then the AI engine gives you the transcript of that.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 165.43,
+      "end": 167.81,
+      "text": "And it can give you transcript with punctuation,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 167.81,
+      "end": 171.07,
+      "text": "such as comma, so that you can turn it",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 171.07,
+      "end": 173.39,
+      "text": "into a report.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 173.39,
+      "end": 177.31,
+      "text": "Another API very popular is the speaker diarrealization API.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 177.31,
+      "end": 181.09,
+      "text": "So for example, there are multiple people here",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 181.09,
+      "end": 184.19,
+      "text": "in this meeting and the API will tell you",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 184.19,
+      "end": 187.15,
+      "text": "which speaker is speaking at which point of time,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 187.15,
+      "end": 189.76,
+      "text": "who spoke, what essentially.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 189.76,
+      "end": 191.14,
+      "text": "And then there is another API",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 191.14,
+      "end": 193.76,
+      "text": "that does speaker identification.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 193.76,
+      "end": 196.62,
+      "text": "This is similar to speaker diarrealization API.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 196.62,
+      "end": 198.86,
+      "text": "It detects who's speaking.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 198.86,
+      "end": 203.42,
+      "text": "And if the AI model has been trained by the speaker's voice,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 203.42,
+      "end": 206.38,
+      "text": "it can tell you who the person is.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 206.38,
+      "end": 209.94,
+      "text": "If you provide a label such as the name of the person,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 209.94,
+      "end": 211.7,
+      "text": "and then it will tell you, for example,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 211.7,
+      "end": 213.5,
+      "text": "Will is speaking at this time.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 213.5,
+      "end": 217.56,
+      "text": "Otherwise, it will just say person A, person B, person C.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 217.56,
+      "end": 219.0,
+      "text": "That's great, Will.",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 219.0,
+      "end": 221.52,
+      "text": "Samir, Will, thank you so much again",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 221.52,
+      "end": 223.92,
+      "text": "for explaining the why's and the how's",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 223.92,
+      "end": 225.32,
+      "text": "of Rings Central's open platform,",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 225.32,
+      "end": 228.64,
+      "text": "and specifically our Intelligent APIs.",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 228.64,
+      "end": 233.34,
+      "text": "programs in beta right now will soon be working toward releasing it generally",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 233.34,
+      "end": 237.66,
+      "text": "available to the public. So please stay tuned and we look forward to getting some",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 237.66,
+      "end": 240.3,
+      "text": "feedback from you.",
+      "speaker": "Speaker 1"
+    }
+  ],
+  "cleaned_segments": [
+    {
+      "start": 0.88,
+      "end": 7.66,
+      "text": "Hello everyone, my name is Tom and today I have with me two of my awesome colleagues and we can start by getting them introduced. (00:00:00.88 - 00:00:07.66)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 8.2,
+      "end": 18.99,
+      "text": "Samir: Hey everyone, this is Samir and I help articulate the value provided by our open platform and the plethora of use cases that can be supported. (00:00:08.20 - 00:00:18.99)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 19.51,
+      "end": 22.02,
+      "text": "Tom: Let's go to the next one. (00:00:19.51 - 00:00:22.02)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 22.18,
+      "end": 29.42,
+      "text": "Will: Hi everyone, my name is Will and I talk about how we use the APIs. (00:00:22.18 - 00:00:29.42)",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 29.42,
+      "end": 36.42,
+      "text": "Will: How do we integrate them? How do we deploy them and go live in our production applications? (00:00:29.42 - 00:00:36.42)",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 36.42,
+      "end": 44.71,
+      "text": "Tom: Awesome. Thanks, guys. Today the topic is about RingCentral's AI APIs for conversational intelligence. (00:00:36.42 - 00:00:44.71)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 44.71,
+      "end": 53.1,
+      "text": "Tom: So let's get started. Question for Samir. AI has been a highly used acronym over the past several years. (00:00:44.71 - 00:00:53.10)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 53.1,
+      "end": 59.1,
+      "text": "Tom: How do you understand it in the context of conversations? What capabilities does it bring? (00:00:53.10 - 00:00:59.10)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 59.1,
+      "end": 63.33,
+      "text": "Tom: And how easy is it to use? (00:00:59.10 - 00:01:03.33)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 63.33,
+      "end": 66.29,
+      "text": "Samir: Very well, Tom, you hit the nail on the head. (00:01:03.33 - 00:01:06.29)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 66.29,
+      "end": 70.27,
+      "text": "Samir: Yes, AI is a very, very highly used acronym for, I would say, the last five to six years. (00:01:06.29 - 00:01:10.27)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 70.27,
+      "end": 72.37,
+      "text": "Samir: But when you think about AI in the context of conversations, the first thing that comes to mind (00:01:10.27 - 00:01:12.37)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 72.37,
+      "end": 76.01,
+      "text": "Samir: is speech-to-text capability or text-to-speech capabilities, right? (00:01:12.37 - 00:01:16.01)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 76.01,
+      "end": 78.17,
+      "text": "Samir: But I think it's much, much beyond that. (00:01:16.01 - 00:01:18.17)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 78.17,
+      "end": 80.33,
+      "text": "Samir: For example, you can do a lot of interaction analysis, sentiment analysis, and emotional analysis with these APIs that we offer. (00:01:18.17 - 00:01:20.33)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 80.33,
+      "end": 82.61,
+      "text": "Samir: It means if you are in a contact-center use case where a supervisor needs to understand what kind of calls are coming in from people around the world to understand the sentiment level, they can simply (00:01:20.33 - 00:01:25.53)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 82.61,
+      "end": 85.53,
+      "text": "Samir: have a pointer 0 to 5 to figure out which range the calls fall into to understand the sentiment of those calls, right? (00:01:25.53 - 00:01:31.09)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 85.53,
+      "end": 88.61,
+      "text": "Samir: That's one of the biggest powers that we give through our AI APIs. (00:01:31.09 - 00:01:34.61)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 88.61,
+      "end": 94.61,
+      "text": "Tom: Wow, that is so interesting. (00:01:34.61 - 00:01:36.97)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 94.61,
+      "end": 100.05,
+      "text": "Tom: Next question I have here is for Will. What are the different sets of APIs that we support today? (00:01:36.97 - 00:01:43.49)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 100.05,
+      "end": 106.13,
+      "text": "Tom: And can you shed some light on three of the top most used conversational intelligence API use cases across our portfolio of API products? (00:01:43.49 - 00:01:49.89)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 106.13,
+      "end": 112.61,
+      "text": "Will: Yeah, great question. We support basically APIs in two categories: one, audio APIs, and the other set of APIs are based on text. (00:01:49.89 - 00:01:58.89)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 112.61,
+      "end": 114.95,
+      "text": "Will: The three most popular APIs are speech-to-text, because audio gets converted into text and then the AI engine gives you the transcript of that. (00:01:58.89 - 00:02:05.81)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 114.95,
+      "end": 117.51,
+      "text": "Will: It can give you a transcript with punctuation, such as commas, so that you can turn it into a report. (00:02:05.81 - 00:02:11.07)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 117.51,
+      "end": 120.97,
+      "text": "Will: Another very popular API is the speaker diarization API. For example, there are multiple people in this meeting and the API will tell you which speaker is speaking at which point of time\u2014who spoke what, essentially. (00:02:11.07 - 00:02:17.31)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 120.97,
+      "end": 123.49,
+      "text": "Will: Then there is another API that does speaker identification. This is similar to speaker diarization: it detects who's speaking. (00:02:17.31 - 00:02:23.09)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 123.49,
+      "end": 126.05,
+      "text": "Will: If the AI model has been trained on the speaker's voice, it can tell you who the person is. If you provide a label such as the name of the person, then it will tell you, for example, 'Will is speaking at this time.' Otherwise, it will just say 'Person A, Person B, Person C.' (00:02:23.09 - 00:02:33.42)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 126.05,
+      "end": 129.89,
+      "text": "Tom: That's great, Will. (00:02:33.42 - 00:02:37.56)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 129.89,
+      "end": 133.17,
+      "text": "Tom: Samir, Will, thank you so much again for explaining the whys and the hows of RingCentral's open platform and specifically our intelligent APIs. (00:02:37.56 - 00:02:44.52)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 133.17,
+      "end": 136.65,
+      "text": "Tom: These programs are in beta right now and we will soon be working toward releasing them generally available to the public. So please stay tuned and we look forward to getting some feedback from you. (00:02:44.52 - 00:02:50.30)",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 136.65,
+      "end": 140.47,
+      "text": "across our portfolio of API products?",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 140.47,
+      "end": 141.79,
+      "text": "Yeah, great question.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 141.79,
+      "end": 144.89,
+      "text": "We support basically APIs at two categories.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 144.89,
+      "end": 147.77,
+      "text": "One, they're audio APIs,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 147.77,
+      "end": 151.11,
+      "text": "and the other set of APIs are based on text.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 151.11,
+      "end": 155.81,
+      "text": "And the three most popular APIs are,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 155.81,
+      "end": 157.53,
+      "text": "you can say the speech to text,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 157.53,
+      "end": 160.77,
+      "text": "because even audio gets converted into text,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 160.77,
+      "end": 165.43,
+      "text": "and then the AI engine gives you the transcript of that.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 165.43,
+      "end": 167.81,
+      "text": "And it can give you transcript with punctuation,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 167.81,
+      "end": 171.07,
+      "text": "such as comma, so that you can turn it",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 171.07,
+      "end": 173.39,
+      "text": "into a report.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 173.39,
+      "end": 177.31,
+      "text": "Another API very popular is the speaker diarrealization API.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 177.31,
+      "end": 181.09,
+      "text": "So for example, there are multiple people here",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 181.09,
+      "end": 184.19,
+      "text": "in this meeting and the API will tell you",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 184.19,
+      "end": 187.15,
+      "text": "which speaker is speaking at which point of time,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 187.15,
+      "end": 189.76,
+      "text": "who spoke, what essentially.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 189.76,
+      "end": 191.14,
+      "text": "And then there is another API",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 191.14,
+      "end": 193.76,
+      "text": "that does speaker identification.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 193.76,
+      "end": 196.62,
+      "text": "This is similar to speaker diarrealization API.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 196.62,
+      "end": 198.86,
+      "text": "It detects who's speaking.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 198.86,
+      "end": 203.42,
+      "text": "And if the AI model has been trained by the speaker's voice,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 203.42,
+      "end": 206.38,
+      "text": "it can tell you who the person is.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 206.38,
+      "end": 209.94,
+      "text": "If you provide a label such as the name of the person,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 209.94,
+      "end": 211.7,
+      "text": "and then it will tell you, for example,",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 211.7,
+      "end": 213.5,
+      "text": "Will is speaking at this time.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 213.5,
+      "end": 217.56,
+      "text": "Otherwise, it will just say person A, person B, person C.",
+      "speaker": "Speaker 2"
+    },
+    {
+      "start": 217.56,
+      "end": 219.0,
+      "text": "That's great, Will.",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 219.0,
+      "end": 221.52,
+      "text": "Samir, Will, thank you so much again",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 221.52,
+      "end": 223.92,
+      "text": "for explaining the why's and the how's",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 223.92,
+      "end": 225.32,
+      "text": "of Rings Central's open platform,",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 225.32,
+      "end": 228.64,
+      "text": "and specifically our Intelligent APIs.",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 228.64,
+      "end": 233.34,
+      "text": "programs in beta right now will soon be working toward releasing it generally",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 233.34,
+      "end": 237.66,
+      "text": "available to the public. So please stay tuned and we look forward to getting some",
+      "speaker": "Speaker 1"
+    },
+    {
+      "start": 237.66,
+      "end": 240.3,
+      "text": "feedback from you.",
+      "speaker": "Speaker 1"
+    }
+  ],
+  "summary_preset": "advice"
+}
