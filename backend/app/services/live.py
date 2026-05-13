@@ -15,9 +15,17 @@ _LOCKS_GUARD = threading.Lock()
 _PATH_LOCKS: dict[str, threading.Lock] = {}
 
 
-def start_live_meeting(db: Session, title: str | None = None, source: str = "google_meet") -> Meeting:
+def start_live_meeting(
+    db: Session,
+    title: str | None = None,
+    source: str = "google_meet",
+    meeting_code: str | None = None,
+    source_url: str | None = None,
+) -> Meeting:
     name = (title or "").strip() or "Live meeting"
     source_name = (source or "").strip() or "unknown"
+    code = (meeting_code or "").strip() or None
+    url = (source_url or "").strip() or None
 
     meeting = Meeting(
         original_filename=name,
@@ -35,6 +43,8 @@ def start_live_meeting(db: Session, title: str | None = None, source: str = "goo
         "meeting_id": meeting.id,
         "original_filename": meeting.original_filename,
         "source": source_name,
+        "meeting_code": code,
+        "source_url": url,
         "live": True,
         "started_at": meeting.created_at.isoformat(),
         "finished_at": None,
@@ -181,14 +191,20 @@ def compact_live_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]
             compacted.append(normalized)
             continue
 
-        previous = compacted[-1]
-        if _is_caption_update(str(previous.get("text") or ""), text):
-            if len(text) >= len(str(previous.get("text") or "")):
+        absorbed = False
+        for previous in reversed(compacted[-20:]):
+            if _is_caption_update(str(previous.get("text") or ""), text):
+                previous_text = str(previous.get("text") or "")
+                merged_text = _merge_caption_text(previous_text, text)
                 previous_start = previous.get("start", normalized.get("start", 0))
+                previous_end = previous.get("end", previous.get("start", 0))
                 previous.update(normalized)
+                previous["text"] = merged_text
                 previous["start"] = min(float(previous_start), float(normalized.get("start", 0)))
-            else:
-                previous["end"] = normalized.get("end", previous.get("end"))
+                previous["end"] = max(float(previous_end or 0), float(normalized.get("end", 0) or 0))
+                absorbed = True
+                break
+        if absorbed:
             continue
 
         compacted.append(normalized)
@@ -211,11 +227,18 @@ def _is_rejected_caption(text: str, speaker: str) -> bool:
         return True
     if (
         lower == "you"
+        or _is_ui_noise_text(text)
         or lower.startswith("joined as ")
         or lower.startswith("language ")
         or "meeting host" in lower
         or lower == "live captions have been turned off"
         or lower.startswith("turn off microphone")
+        or "or share this joining info with others you want in the meeting" in lower
+        or "end the call or just leave" in lower
+        or "just leave the call" in lower
+        or "leave the call if you don't want to end it" in lower
+        or "leave the call if you don’t want to end it" in lower
+        or "end it for everyone else" in lower
     ):
         return True
     if _looks_like_repeated_short_name(text):
@@ -227,12 +250,67 @@ def _is_rejected_caption(text: str, speaker: str) -> bool:
     return False
 
 
+def _is_ui_noise_text(text: str) -> bool:
+    cleaned = _clean_caption_text(text)
+    lower = cleaned.lower()
+    words = lower.split()
+    language_names = {
+        "english",
+        "hindi",
+        "spanish",
+        "french",
+        "german",
+        "portuguese",
+        "japanese",
+        "korean",
+        "chinese",
+    }
+    if lower in language_names:
+        return True
+    if re.fullmatch(r"[a-z]{3}-[a-z]{4}-[a-z]{3}", lower):
+        return True
+    if 1 <= len(words) <= 3 and _looks_like_participant_label(words):
+        return True
+    return False
+
+
 def _is_caption_update(previous: str, current: str) -> bool:
     for previous_clean in _caption_compare_keys(previous):
         for current_clean in _caption_compare_keys(current):
             if _caption_keys_overlap(previous_clean, current_clean):
                 return True
     return False
+
+
+def _merge_caption_text(previous: str, current: str) -> str:
+    previous_clean = _clean_caption_text(previous)
+    current_clean = _clean_caption_text(current)
+    if not previous_clean:
+        return current_clean
+    if not current_clean:
+        return previous_clean
+    if previous_clean == current_clean:
+        return previous_clean
+    previous_key = _caption_compare_key(previous_clean)
+    current_key = _caption_compare_key(current_clean)
+    if previous_key and current_key:
+        if current_key.startswith(previous_key) or previous_key in current_key:
+            return current_clean
+        if previous_key.startswith(current_key) or current_key in previous_key:
+            return previous_clean
+
+    previous_words = previous_clean.split()
+    current_words = current_clean.split()
+    previous_key_words = _caption_compare_key(previous_clean).split()
+    current_key_words = _caption_compare_key(current_clean).split()
+    max_overlap = min(40, len(previous_key_words), len(current_key_words), len(previous_words), len(current_words))
+    for size in range(max_overlap, 3, -1):
+        if previous_key_words[-size:] == current_key_words[:size]:
+            return " ".join([*previous_words, *current_words[size:]])
+        if current_key_words[-size:] == previous_key_words[:size]:
+            return " ".join([*current_words, *previous_words[size:]])
+
+    return current_clean if len(current_clean) >= len(previous_clean) else previous_clean
 
 
 def _drop_recent_duplicate_echoes(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -265,6 +343,10 @@ def _caption_keys_overlap(previous_clean: str, current_clean: str) -> bool:
         return False
     if previous_clean.startswith(current_clean) or current_clean.startswith(previous_clean):
         return True
+    if len(previous_clean) >= 24 and current_clean in previous_clean:
+        return True
+    if len(current_clean) >= 24 and previous_clean in current_clean:
+        return True
 
     previous_words = previous_clean.split()
     current_words = current_clean.split()
@@ -275,7 +357,16 @@ def _caption_keys_overlap(previous_clean: str, current_clean: str) -> bool:
         common += 1
 
     smaller = min(len(previous_words), len(current_words))
-    return common >= 8 and common >= int(smaller * 0.6)
+    if common >= 8 and common >= int(smaller * 0.6):
+        return True
+
+    max_overlap = min(40, len(previous_words), len(current_words))
+    for size in range(max_overlap, 3, -1):
+        if previous_words[-size:] == current_words[:size]:
+            return True
+        if current_words[-size:] == previous_words[:size]:
+            return True
+    return False
 
 
 def _caption_compare_keys(text: str) -> set[str]:

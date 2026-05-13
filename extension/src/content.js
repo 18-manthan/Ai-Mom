@@ -1,31 +1,57 @@
 (function () {
   "use strict";
 
-  if (window.__MOM_LIVE_CAPTURE_LOADED__) {
+  const SCRIPT_VERSION = "0.1.13";
+
+  if (window.__MOM_LIVE_CAPTURE_LOADED__ && window.__MOM_LIVE_CAPTURE_VERSION__ === SCRIPT_VERSION) {
     return;
   }
+  if (window.__MOM_LIVE_CAPTURE_LOADED__) {
+    document.getElementById("mom-live-capture")?.remove();
+  }
   window.__MOM_LIVE_CAPTURE_LOADED__ = true;
+  window.__MOM_LIVE_CAPTURE_VERSION__ = SCRIPT_VERSION;
 
   const DEFAULT_API_BASE = "http://127.0.0.1:8000";
   const DASHBOARD_URL = "http://127.0.0.1:5173";
   const SCAN_INTERVAL_MS = 900;
-  const MAX_TEXT_LENGTH = 1400;
+  const MAX_TEXT_LENGTH = 1000000;
+  const CAPTION_TEXT_WINDOW = 500000;
+  const ACTIVE_SESSION_KEY = "mom.activeSession";
+  const MAX_PENDING_SEGMENTS = 5000;
+  const MAX_BOTTOM_TEXT_LENGTH = 10000;
+  const MAX_CANDIDATES_PER_SCAN = 4;
+  const NO_CAPTION_WARNING_MS = 5000;
+  const NO_CAPTION_RECOVERY_MS = 8000;
 
   const state = {
     apiBase: window.localStorage.getItem("mom.apiBase") || DEFAULT_API_BASE,
     captureStartedAt: 0,
     isCapturing: false,
+    isConnected: false,
     meetingId: null,
+    meetingCode: meetingCode(),
     observer: null,
     scanTimer: null,
+    retryTimer: null,
     nodeIds: new WeakMap(),
     nextNodeId: 1,
-    activeCaption: null,
+    activeCaptions: new Map(),
     sentCount: 0,
+    pendingSegments: [],
+    previewSegments: [],
+    lastCandidateAt: 0,
+    lastRecoveryAt: 0,
+    nodeSnapshots: new WeakMap(),
   };
 
   const ui = createPanel();
+  window.setInterval(render, 1000);
   render();
+  restoreActiveSession().catch((error) => {
+    renderStatus(errorMessage(error));
+    render();
+  });
 
   function createPanel() {
     const root = document.createElement("div");
@@ -35,9 +61,20 @@
         <div class="mom-head">
           <div class="mom-title">
             <strong>MOM Live Capture</strong>
-            <span>Google Meet captions</span>
+            <span>Google Meet captions · v${SCRIPT_VERSION}</span>
           </div>
           <span class="mom-pill" data-role="state">Idle</span>
+        </div>
+        <div class="mom-live-strip">
+          <span class="mom-record-dot" data-role="record-dot"></span>
+          <div class="mom-wave" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <span class="mom-timer" data-role="timer">00:00</span>
         </div>
         <div class="mom-row">
           <label for="mom-api-base">Backend</label>
@@ -51,6 +88,9 @@
         <div class="mom-meta">
           <span data-role="count">0 updates</span>
           <a class="mom-link" href="${DASHBOARD_URL}" target="_blank" rel="noreferrer">Open MOM</a>
+        </div>
+        <div class="mom-transcript" data-role="transcript">
+          <div class="mom-transcript-empty">Live captions will appear here.</div>
         </div>
         <div class="mom-status" data-role="status">Start capture after captions are enabled.</div>
       </div>
@@ -80,19 +120,35 @@
     }
 
     try {
+      if (state.meetingId) {
+        state.isCapturing = true;
+        state.captureStartedAt = state.captureStartedAt || Date.now();
+        startObserver();
+        persistActiveSession();
+        renderStatus("Resumed capture for the active MOM meeting.");
+        render();
+        return;
+      }
+
       renderStatus("Connecting to MOM backend...");
       const meeting = await postJson("/api/live-meetings", {
         title: meetingTitle(),
         source: "google_meet",
+        meeting_code: state.meetingCode,
+        source_url: window.location.href,
       });
 
       state.meetingId = meeting.id;
       state.captureStartedAt = Date.now();
       state.isCapturing = true;
       state.sentCount = 0;
-      state.activeCaption = null;
+      state.activeCaptions.clear();
+      state.pendingSegments = [];
+      state.previewSegments = [];
+      state.isConnected = true;
 
       startObserver();
+      persistActiveSession();
       renderStatus("Capturing. Keep Google Meet captions turned on.");
       render();
     } catch (error) {
@@ -104,7 +160,10 @@
   async function stopCapture() {
     if (!state.meetingId) {
       stopObserver();
+      stopRetryTimer();
       state.isCapturing = false;
+      state.isConnected = false;
+      clearActiveSession();
       render();
       return;
     }
@@ -112,14 +171,21 @@
     const meetingId = state.meetingId;
     stopObserver();
     state.isCapturing = false;
-    state.meetingId = null;
 
     try {
+      await flushPendingSegments();
       renderStatus("Finishing live meeting...");
       await postJson(`/api/live-meetings/${meetingId}/finish`, {});
+      state.meetingId = null;
+      state.isConnected = false;
+      state.pendingSegments = [];
+      state.previewSegments = [];
+      stopRetryTimer();
+      clearActiveSession();
       renderStatus("Finished. Open MOM to generate notes.");
     } catch (error) {
-      renderStatus(errorMessage(error));
+      persistActiveSession();
+      renderStatus(`${errorMessage(error)} Click Stop again after the backend is reachable.`);
     } finally {
       render();
     }
@@ -152,6 +218,7 @@
     });
 
     state.scanTimer = window.setInterval(scanCaptions, SCAN_INTERVAL_MS);
+    startRetryTimer();
     scanCaptions();
   }
 
@@ -163,6 +230,22 @@
     if (state.scanTimer) {
       window.clearInterval(state.scanTimer);
       state.scanTimer = null;
+    }
+  }
+
+  function startRetryTimer() {
+    if (state.retryTimer) {
+      return;
+    }
+    state.retryTimer = window.setInterval(() => {
+      flushPendingSegments().catch(() => undefined);
+    }, 2500);
+  }
+
+  function stopRetryTimer() {
+    if (state.retryTimer) {
+      window.clearInterval(state.retryTimer);
+      state.retryTimer = null;
     }
   }
 
@@ -183,9 +266,34 @@
     }
 
     const candidates = findCaptionCandidates();
-    if (candidates.length > 0) {
-      trackCaption(candidates[0]);
+    const missingForMs = Date.now() - state.lastCandidateAt;
+    if (candidates.length === 0 && missingForMs > NO_CAPTION_RECOVERY_MS && Date.now() - state.lastRecoveryAt > NO_CAPTION_RECOVERY_MS) {
+      recoverCaptionScanner();
+      return;
     }
+    if (candidates.length === 0 && missingForMs > NO_CAPTION_WARNING_MS) {
+      renderStatus("Reconnecting to Google Meet captions...");
+      render();
+    }
+    for (const candidate of candidates) {
+      state.lastCandidateAt = Date.now();
+      trackCaption(candidate);
+    }
+  }
+
+  function recoverCaptionScanner() {
+    state.lastRecoveryAt = Date.now();
+    state.nodeSnapshots = new WeakMap();
+    renderStatus("Refreshing caption scanner...");
+    stopObserver();
+    window.setTimeout(() => {
+      if (!state.isCapturing) {
+        return;
+      }
+      startObserver();
+      scanCaptions();
+    }, 350);
+    render();
   }
 
   function findCaptionCandidates() {
@@ -195,6 +303,7 @@
       '[role="log"]',
       "[data-message-text]",
       "div",
+      "span",
     ];
     const nodes = Array.from(document.querySelectorAll(selectors.join(",")));
     const extracted = [];
@@ -214,17 +323,73 @@
       if (!parsed || isRejectedCaption(parsed)) {
         continue;
       }
+      if (!isLikelyLiveCaptionNode(node) && !looksLikeCaptionText(parsed.text)) {
+        continue;
+      }
+      const freshness = nodeTextFreshness(node, parsed.text);
 
       extracted.push({
         node,
         speaker: parsed.speaker,
         text: parsed.text,
-        score: captionScore(node, rect, parsed),
+        score: captionScore(node, rect, parsed) - Math.min(45, freshness.stableMs / 1000),
       });
     }
 
+    if (!hasStrongCaptionCandidate(extracted)) {
+      extracted.push(...findBottomTextCandidates());
+    }
     extracted.sort((a, b) => b.score - a.score);
-    return uniqueCaptionCandidates(extracted).slice(0, 1);
+    return uniqueCaptionCandidates(extracted).slice(0, MAX_CANDIDATES_PER_SCAN);
+  }
+
+  function findBottomTextCandidates() {
+    const candidates = [];
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, {
+      acceptNode(textNode) {
+        const text = normalizeText(textNode.nodeValue || "");
+        if (text.length < 3 || text.length > MAX_BOTTOM_TEXT_LENGTH) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        const parent = textNode.parentElement;
+        if (!parent || ui.contains(parent) || !isVisible(parent)) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        if (parent.closest("button,input,textarea,select,nav,header,aside,menu")) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
+    });
+
+    let node;
+    let checked = 0;
+    while ((node = walker.nextNode()) && checked < 1200) {
+      checked += 1;
+      const parent = node.parentElement;
+      if (!parent) continue;
+      const rect = parent.getBoundingClientRect();
+      const text = normalizeText(node.nodeValue || "");
+      if (!looksLikeBottomCaptionText(text, rect)) {
+        continue;
+      }
+      const parsed = parseCaptionText(text);
+      if (!parsed || isRejectedCaption(parsed)) {
+        continue;
+      }
+      if (!looksLikeCaptionText(parsed.text)) {
+        continue;
+      }
+      const freshness = nodeTextFreshness(parent, parsed.text);
+      candidates.push({
+        node: parent,
+        speaker: parsed.speaker,
+        text: parsed.text,
+        score: 75 + Math.max(0, rect.top / 20) - Math.min(35, freshness.stableMs / 1000),
+      });
+    }
+
+    return candidates;
   }
 
   function trackCaption(candidate) {
@@ -234,23 +399,22 @@
       return;
     }
 
-    const active = state.activeCaption;
+    const captionKey = candidate.speaker || "Speaker";
+    const active = state.activeCaptions.get(captionKey);
     const isSameCaption = active && captionsOverlap(active.text, text);
 
     if (!isSameCaption) {
-      state.activeCaption = {
+      state.activeCaptions.set(captionKey, {
         speaker: candidate.speaker,
         text,
         externalId: `meet-caption-${Date.now()}-${hashText(`${candidate.speaker}:${text}`)}`,
         start: elapsed,
         lastSentText: "",
-      };
+      });
     }
 
-    const current = state.activeCaption;
-    if (text.length >= current.text.length) {
-      current.text = text;
-    }
+    const current = state.activeCaptions.get(captionKey);
+    current.text = mergeCaptionText(current.text, text);
     if (current.speaker === "Speaker" && candidate.speaker !== "Speaker") {
       current.speaker = candidate.speaker;
     }
@@ -288,10 +452,22 @@
       is_final: segment.is_final !== false,
     };
 
-    await postJson(`/api/live-meetings/${state.meetingId}/segments`, payload);
-    state.sentCount += 1;
-    renderStatus("Capturing captions...");
-    render();
+    rememberPreviewSegment(payload);
+
+    try {
+      await postJson(`/api/live-meetings/${state.meetingId}/segments`, payload);
+      state.sentCount += 1;
+      state.isConnected = true;
+      persistActiveSession();
+      renderStatus(state.pendingSegments.length ? "Capturing captions. Retrying queued updates..." : "Capturing captions...");
+      render();
+    } catch (error) {
+      state.isConnected = false;
+      queuePendingSegment(payload);
+      renderStatus(`${errorMessage(error)} Queued ${state.pendingSegments.length} update${state.pendingSegments.length === 1 ? "" : "s"}.`);
+      render();
+      throw error;
+    }
   }
 
   async function postJson(path, payload) {
@@ -317,8 +493,160 @@
     return response.json();
   }
 
+  async function getJson(path) {
+    const response = await fetch(`${state.apiBase}${path}`);
+    if (!response.ok) {
+      const error = new Error(`MOM backend returned ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    return response.json();
+  }
+
+  async function restoreActiveSession() {
+    const session = readActiveSession();
+    if (!session?.meetingId) {
+      return;
+    }
+    if (session.meetingCode && state.meetingCode && session.meetingCode !== state.meetingCode) {
+      return;
+    }
+
+    state.apiBase = normalizeApiBase(session.apiBase || state.apiBase);
+    state.meetingId = session.meetingId;
+    state.captureStartedAt = session.captureStartedAt || Date.now();
+    state.sentCount = session.sentCount || 0;
+    state.pendingSegments = Array.isArray(session.pendingSegments) ? session.pendingSegments : [];
+    state.previewSegments = Array.isArray(session.previewSegments) ? session.previewSegments : [];
+
+    const apiInput = ui.querySelector("#mom-api-base");
+    apiInput.value = state.apiBase;
+
+    try {
+      const meeting = await getJson(`/api/meetings/${state.meetingId}`);
+      if (meeting.status === "completed" || meeting.status === "failed") {
+        clearActiveSession();
+        state.meetingId = null;
+        state.pendingSegments = [];
+        state.previewSegments = [];
+        state.isCapturing = false;
+        state.isConnected = false;
+        renderStatus("Previous MOM live session is already finished.");
+        render();
+        return;
+      }
+      state.isCapturing = true;
+      state.isConnected = true;
+      startObserver();
+      renderStatus("Reconnected to the active MOM live meeting.");
+    } catch (error) {
+      if (error?.status === 404) {
+        clearActiveSession();
+        state.meetingId = null;
+        state.pendingSegments = [];
+        state.previewSegments = [];
+        state.isCapturing = false;
+        state.isConnected = false;
+        renderStatus("Previous MOM live session was not found. Start a new capture.");
+        render();
+        return;
+      }
+      state.isCapturing = false;
+      state.isConnected = false;
+      persistActiveSession();
+      renderStatus("MOM backend is not reachable. Click Resume when it is back.");
+    }
+
+    render();
+  }
+
+  function readActiveSession() {
+    try {
+      return JSON.parse(window.localStorage.getItem(ACTIVE_SESSION_KEY) || "null");
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function persistActiveSession() {
+    if (!state.meetingId) {
+      return;
+    }
+    window.localStorage.setItem(
+      ACTIVE_SESSION_KEY,
+      JSON.stringify({
+        meetingId: state.meetingId,
+        meetingCode: state.meetingCode,
+        apiBase: state.apiBase,
+        captureStartedAt: state.captureStartedAt,
+        sentCount: state.sentCount,
+        pendingSegments: state.pendingSegments.slice(-MAX_PENDING_SEGMENTS),
+        previewSegments: state.previewSegments.slice(-5),
+      }),
+    );
+  }
+
+  function clearActiveSession() {
+    window.localStorage.removeItem(ACTIVE_SESSION_KEY);
+  }
+
+  function queuePendingSegment(payload) {
+    state.pendingSegments.push(payload);
+    if (state.pendingSegments.length > MAX_PENDING_SEGMENTS) {
+      state.pendingSegments = state.pendingSegments.slice(-MAX_PENDING_SEGMENTS);
+    }
+    persistActiveSession();
+  }
+
+  async function flushPendingSegments() {
+    if (!state.meetingId || state.pendingSegments.length === 0) {
+      return;
+    }
+
+    const pending = [...state.pendingSegments];
+    state.pendingSegments = [];
+    for (const payload of pending) {
+      try {
+        await postJson(`/api/live-meetings/${state.meetingId}/segments`, payload);
+        state.sentCount += 1;
+        state.isConnected = true;
+      } catch (error) {
+        state.pendingSegments.unshift(payload, ...pending.slice(pending.indexOf(payload) + 1));
+        if (state.pendingSegments.length > MAX_PENDING_SEGMENTS) {
+          state.pendingSegments = state.pendingSegments.slice(-MAX_PENDING_SEGMENTS);
+        }
+        state.isConnected = false;
+        persistActiveSession();
+        render();
+        throw error;
+      }
+    }
+    persistActiveSession();
+    render();
+  }
+
+  function rememberPreviewSegment(segment) {
+    const externalId = segment.external_id || `${segment.speaker}:${segment.start}`;
+    const preview = {
+      external_id: externalId,
+      speaker: segment.speaker || "Speaker",
+      text: segment.text || "",
+      start: segment.start || 0,
+    };
+    const existingIndex = state.previewSegments.findIndex((item) => item.external_id === externalId);
+    if (existingIndex >= 0) {
+      state.previewSegments[existingIndex] = preview;
+    } else {
+      state.previewSegments.push(preview);
+    }
+    state.previewSegments = state.previewSegments.slice(-5);
+    persistActiveSession();
+    render();
+  }
+
   function parseCaptionText(rawText) {
-    const lines = rawText
+    const sourceText = normalizeText(rawText).slice(-CAPTION_TEXT_WINDOW);
+    const lines = sourceText
       .split("\n")
       .map((line) => normalizeText(line))
       .filter(Boolean);
@@ -330,7 +658,7 @@
       };
     }
 
-    const colonMatch = rawText.match(/^([^:]{2,60}):\s+(.+)$/);
+    const colonMatch = sourceText.match(/^([^:]{2,60}):\s+(.+)$/);
     if (colonMatch && looksLikeSpeaker(colonMatch[1])) {
       return {
         speaker: normalizeText(colonMatch[1]),
@@ -338,7 +666,7 @@
       };
     }
 
-    const selfMatch = rawText.match(/^(You)\s+(.+)$/i);
+    const selfMatch = sourceText.match(/^(You)\s+(.+)$/i);
     if (selfMatch) {
       return {
         speaker: "You",
@@ -346,7 +674,7 @@
       };
     }
 
-    const speakerPrefix = splitLeadingParticipantLabel(rawText);
+    const speakerPrefix = splitLeadingParticipantLabel(sourceText);
     if (speakerPrefix) {
       return {
         speaker: speakerPrefix.speaker,
@@ -356,18 +684,22 @@
 
     return {
       speaker: "Speaker",
-      text: cleanCaptionText(rawText),
+      text: cleanCaptionText(sourceText),
     };
   }
 
   function looksLikeCaptionBlock(text, rect, node) {
-    if (text.length < 3 || text.length > MAX_TEXT_LENGTH) {
+    if (text.length < 3) {
       return false;
     }
-    if (rect.width < 120 || rect.height < 12 || rect.height > 260) {
+    if (text.length > MAX_TEXT_LENGTH && !isLikelyLiveCaptionNode(node)) {
       return false;
     }
-    if (rect.top < window.innerHeight * 0.28) {
+    const likelyCaptionNode = isLikelyLiveCaptionNode(node);
+    if (rect.width < (likelyCaptionNode ? 40 : 80) || rect.height < 8 || rect.height > 360) {
+      return false;
+    }
+    if (rect.top < window.innerHeight * 0.25) {
       return false;
     }
     if (node === document.body || node === document.documentElement) {
@@ -377,6 +709,93 @@
       return false;
     }
     return true;
+  }
+
+  function looksLikeBottomCaptionText(text, rect) {
+    if (rect.width < 35 || rect.height < 8 || rect.height > 90) {
+      return false;
+    }
+    if (rect.top < window.innerHeight * 0.42) {
+      return false;
+    }
+    if (text.split(/\s+/).length > 80) {
+      return false;
+    }
+    return /[A-Za-z]/.test(text);
+  }
+
+  function looksLikeCaptionText(text) {
+    const cleaned = cleanCaptionText(text);
+    const lower = cleaned.toLowerCase();
+    const words = lower.split(/\s+/).filter(Boolean);
+    if (!cleaned || isUiNoiseText(cleaned)) {
+      return false;
+    }
+    if (words.length >= 4) {
+      return true;
+    }
+    if (/[.!?]$/.test(cleaned)) {
+      return true;
+    }
+    const allowedShortStarts = new Set([
+      "yeah",
+      "yes",
+      "no",
+      "okay",
+      "ok",
+      "hey",
+      "hi",
+      "hello",
+      "thanks",
+      "thank",
+      "i",
+      "im",
+      "i'm",
+      "you",
+      "we",
+      "so",
+      "and",
+      "but",
+      "are",
+      "can",
+      "do",
+      "did",
+      "what",
+      "how",
+      "why",
+      "right",
+    ]);
+    return words.length > 0 && allowedShortStarts.has(words[0]);
+  }
+
+  function isUiNoiseText(text) {
+    const cleaned = cleanCaptionText(text);
+    const lower = cleaned.toLowerCase();
+    const words = lower.split(/\s+/).filter(Boolean);
+    const languageNames = new Set([
+      "english",
+      "hindi",
+      "spanish",
+      "french",
+      "german",
+      "portuguese",
+      "japanese",
+      "korean",
+      "chinese",
+    ]);
+    if (languageNames.has(lower)) {
+      return true;
+    }
+    if (state.meetingCode && lower === state.meetingCode) {
+      return true;
+    }
+    if (/^[a-z]{3}-[a-z]{4}-[a-z]{3}$/i.test(cleaned)) {
+      return true;
+    }
+    if (words.length >= 1 && words.length <= 3 && looksLikeParticipantLabel(words)) {
+      return true;
+    }
+    return false;
   }
 
   function captionScore(node, rect, parsed) {
@@ -390,13 +809,41 @@
     return score;
   }
 
+  function isLikelyLiveCaptionNode(node) {
+    return Boolean(
+      node.getAttribute("aria-live") ||
+        node.getAttribute("role") === "log" ||
+        node.hasAttribute("data-message-text"),
+    );
+  }
+
+  function nodeTextFreshness(node, text) {
+    const key = cleanCaptionText(text).toLowerCase();
+    const now = Date.now();
+    const previous = state.nodeSnapshots.get(node);
+    if (!previous || previous.key !== key) {
+      state.nodeSnapshots.set(node, { key, since: now });
+      return { stableMs: 0 };
+    }
+    return { stableMs: now - previous.since };
+  }
+
   function uniqueCaptionCandidates(candidates) {
     const seen = new Set();
     const unique = [];
 
-    for (const candidate of candidates) {
+    const sorted = [...candidates].sort((a, b) => cleanCaptionText(b.text).length - cleanCaptionText(a.text).length);
+    for (const candidate of sorted) {
       const signature = cleanCaptionText(candidate.text).toLowerCase();
       if (seen.has(signature)) {
+        continue;
+      }
+      if (
+        unique.some((existing) => {
+          const existingSignature = cleanCaptionText(existing.text).toLowerCase();
+          return existingSignature.includes(signature) || signature.includes(existingSignature);
+        })
+      ) {
         continue;
       }
       seen.add(signature);
@@ -404,6 +851,13 @@
     }
 
     return unique;
+  }
+
+  function hasStrongCaptionCandidate(candidates) {
+    return candidates.some((candidate) => {
+      const text = cleanCaptionText(candidate.text);
+      return candidate.score >= 85 && text.split(/\s+/).length >= 4 && !isUiNoiseText(text);
+    });
   }
 
   function captionsOverlap(previous, next) {
@@ -415,18 +869,49 @@
     if (a === b || a.startsWith(b) || b.startsWith(a)) {
       return true;
     }
+    if ((a.length >= 24 && b.includes(a)) || (b.length >= 24 && a.includes(b))) {
+      return true;
+    }
 
     const aWords = a.split(" ");
     const bWords = b.split(" ");
-    const overlapSize = Math.min(8, aWords.length, bWords.length);
-    if (overlapSize < 4) {
-      return false;
+    const maxOverlap = Math.min(40, aWords.length, bWords.length);
+    for (let size = maxOverlap; size >= 4; size -= 1) {
+      if (
+        aWords.slice(-size).join(" ") === bWords.slice(0, size).join(" ") ||
+        bWords.slice(-size).join(" ") === aWords.slice(0, size).join(" ")
+      ) {
+        return true;
+      }
     }
 
-    return (
-      aWords.slice(-overlapSize).join(" ") === bWords.slice(0, overlapSize).join(" ") ||
-      bWords.slice(-overlapSize).join(" ") === aWords.slice(0, overlapSize).join(" ")
-    );
+    return false;
+  }
+
+  function mergeCaptionText(previous, next) {
+    const a = cleanCaptionText(previous);
+    const b = cleanCaptionText(next);
+    if (!a) return b;
+    if (!b) return a;
+    if (a === b) return a;
+    if (b.startsWith(a)) return b;
+    if (a.startsWith(b)) return a;
+    if (a.length >= 24 && b.includes(a)) return b;
+    if (b.length >= 24 && a.includes(b)) return a;
+
+    const aWords = a.split(" ");
+    const bWords = b.split(" ");
+    const maxOverlap = Math.min(40, aWords.length, bWords.length);
+    for (let size = maxOverlap; size >= 4; size -= 1) {
+      if (aWords.slice(-size).join(" ").toLowerCase() === bWords.slice(0, size).join(" ").toLowerCase()) {
+        return [...aWords, ...bWords.slice(size)].join(" ");
+      }
+      if (bWords.slice(-size).join(" ").toLowerCase() === aWords.slice(0, size).join(" ").toLowerCase()) {
+        return [...bWords, ...aWords.slice(size)].join(" ");
+      }
+    }
+
+    return b.length >= a.length ? b : a;
   }
 
   function isVisible(node) {
@@ -450,6 +935,7 @@
     }
     if (
       lower === "you" ||
+      isUiNoiseText(text) ||
       lower.startsWith("joined as ") ||
       lower.startsWith("language ") ||
       lower.includes("meeting host") ||
@@ -473,12 +959,30 @@
       "start capture",
       "stop capture",
       "open mom",
+      "google meet captions",
+      "live captions will appear",
+      "capturing captions",
+      "or share this joining info with others you want in the meeting",
+      "end the call or just leave",
+      "just leave the call",
+      "leave the call if you don't want to end it",
+      "leave the call if you don’t want to end it",
+      "end it for everyone else",
       "turn on captions",
+      "turn off captions",
       "meeting details",
       "copy joining info",
       "present now",
       "raise hand",
       "more options",
+      "leave call",
+      "turn off camera",
+      "turn on camera",
+      "turn on microphone",
+      "turn off microphone",
+      "show everyone",
+      "activities",
+      "host controls",
     ];
     return rejected.some((item) => lower.includes(item));
   }
@@ -649,7 +1153,13 @@
 
   function meetingTitle() {
     const title = normalizeText(document.title).replace(/\s*-\s*Google Meet\s*$/i, "");
-    return title || "Google Meet live meeting";
+    const code = meetingCode();
+    return title || (code ? `Meet - ${code}` : "Google Meet live meeting");
+  }
+
+  function meetingCode() {
+    const match = window.location.pathname.match(/\/([a-z]{3}-[a-z]{4}-[a-z]{3})/i);
+    return match ? match[1].toLowerCase() : "";
   }
 
   function getNodeId(node) {
@@ -676,14 +1186,42 @@
     const stop = ui.querySelector('[data-action="stop"]');
     const test = ui.querySelector('[data-action="test"]');
     const apiInput = ui.querySelector("#mom-api-base");
+    const transcript = ui.querySelector('[data-role="transcript"]');
+    const timer = ui.querySelector('[data-role="timer"]');
+    const recordDot = ui.querySelector('[data-role="record-dot"]');
 
-    statePill.textContent = state.isCapturing ? `Live #${state.meetingId}` : "Idle";
-    statePill.dataset.state = state.isCapturing ? "live" : "idle";
-    count.textContent = `${state.sentCount} update${state.sentCount === 1 ? "" : "s"}`;
+    const hasActiveMeeting = Boolean(state.meetingId);
+    statePill.textContent = state.isCapturing
+      ? `Live #${state.meetingId}`
+      : hasActiveMeeting
+        ? `Paused #${state.meetingId}`
+        : "Idle";
+    statePill.dataset.state = state.isCapturing ? "live" : hasActiveMeeting ? "paused" : "idle";
+    count.textContent = `${state.sentCount} sent · ${state.pendingSegments.length} queued`;
+    start.textContent = hasActiveMeeting && !state.isCapturing ? "Resume" : "Start";
     start.disabled = state.isCapturing;
-    stop.disabled = !state.isCapturing;
+    stop.disabled = !hasActiveMeeting;
     test.disabled = !state.isCapturing;
-    apiInput.disabled = state.isCapturing;
+    apiInput.disabled = hasActiveMeeting;
+    timer.textContent = state.captureStartedAt && hasActiveMeeting
+      ? formatTimer((Date.now() - state.captureStartedAt) / 1000)
+      : "00:00";
+    recordDot.dataset.state = state.isCapturing ? "live" : hasActiveMeeting ? "paused" : "idle";
+
+    if (state.previewSegments.length === 0) {
+      transcript.innerHTML = `<div class="mom-transcript-empty">Live captions will appear here.</div>`;
+    } else {
+      transcript.innerHTML = state.previewSegments
+        .map(
+          (segment) => `
+            <div class="mom-transcript-line">
+              <span>${escapeHtml(segment.speaker)}</span>
+              <p>${escapeHtml(segment.text)}</p>
+            </div>
+          `,
+        )
+        .join("");
+    }
   }
 
   function renderStatus(message) {
@@ -695,5 +1233,21 @@
       return `Could not reach MOM backend at ${state.apiBase}.`;
     }
     return error instanceof Error ? error.message : "Unexpected MOM capture error.";
+  }
+
+  function escapeHtml(value) {
+    return String(value || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#039;");
+  }
+
+  function formatTimer(seconds) {
+    const total = Math.max(0, Math.floor(seconds));
+    const minutes = Math.floor(total / 60);
+    const remainder = total % 60;
+    return `${String(minutes).padStart(2, "0")}:${String(remainder).padStart(2, "0")}`;
   }
 })();

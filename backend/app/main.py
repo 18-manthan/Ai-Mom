@@ -12,7 +12,7 @@ from .config import settings
 from .db import get_db, init_db
 from .models import Meeting
 from .services.audio import validate_media_file
-from .services.live import append_live_segment, finish_live_meeting, start_live_meeting
+from .services.live import append_live_segment, compact_live_segments, finish_live_meeting, start_live_meeting
 from .services.processor import process_cleanup, process_meeting, process_summary
 
 
@@ -26,6 +26,8 @@ class SummaryRequest(BaseModel):
 class LiveMeetingStartRequest(BaseModel):
     title: str | None = None
     source: str = "google_meet"
+    meeting_code: str | None = None
+    source_url: str | None = None
 
 
 class LiveSegmentRequest(BaseModel):
@@ -59,13 +61,47 @@ def on_startup() -> None:
     init_db()
 
 
-def _meeting_payload(meeting: Meeting) -> dict:
+def _transcript_metadata(meeting: Meeting) -> dict:
+    defaults = {
+        "is_live": False,
+        "source": None,
+        "meeting_code": None,
+        "source_url": None,
+        "started_at": None,
+        "finished_at": None,
+        "segment_count": 0,
+    }
+    if not meeting.transcript_path:
+        return defaults
+
+    path = Path(meeting.transcript_path)
+    if not path.exists():
+        return defaults
+
+    try:
+        transcript = _load_transcript(path)
+    except (json.JSONDecodeError, OSError, ValueError):
+        return defaults
+
+    segments = transcript.get("segments", [])
+    return {
+        "is_live": bool(transcript.get("live", False)),
+        "source": transcript.get("source"),
+        "meeting_code": transcript.get("meeting_code"),
+        "source_url": transcript.get("source_url"),
+        "started_at": transcript.get("started_at"),
+        "finished_at": transcript.get("finished_at"),
+        "segment_count": len(segments) if isinstance(segments, list) else 0,
+    }
+
+
+def _meeting_payload(meeting: Meeting, include_metadata: bool = True) -> dict:
     summary_status = meeting.summary_status or "not_started"
     if meeting.summary and summary_status == "not_started":
         summary_status = "completed"
     cleanup_status = meeting.cleanup_status or "not_started"
 
-    return {
+    payload = {
         "id": meeting.id,
         "original_filename": meeting.original_filename,
         "status": meeting.status,
@@ -82,6 +118,9 @@ def _meeting_payload(meeting: Meeting) -> dict:
         "created_at": meeting.created_at.isoformat(),
         "updated_at": meeting.updated_at.isoformat(),
     }
+    if include_metadata:
+        payload.update(_transcript_metadata(meeting))
+    return payload
 
 
 def _delete_file(path_value: str | None) -> None:
@@ -164,6 +203,8 @@ def create_live_meeting(
         db,
         title=request.title if request else None,
         source=request.source if request else "google_meet",
+        meeting_code=request.meeting_code if request else None,
+        source_url=request.source_url if request else None,
     )
     return _meeting_payload(meeting)
 
@@ -261,16 +302,28 @@ def get_meeting(meeting_id: int, db: Session = Depends(get_db)) -> dict:
     payload["language"] = None
     payload["language_probability"] = None
 
-    if meeting.transcript_path:
+    if meeting.status == "completed" and meeting.transcript_path:
         path = Path(meeting.transcript_path)
         if path.exists():
             transcript = _load_transcript(path)
+            segments = transcript.get("segments", [])
+            if not isinstance(segments, list):
+                segments = []
+            if transcript.get("live", False):
+                segments = compact_live_segments(segments)
             payload.update(
                 {
-                    "segments": transcript.get("segments", []),
+                    "segments": segments,
                     "cleaned_segments": transcript.get("cleaned_segments", []),
                     "language": transcript.get("language"),
                     "language_probability": transcript.get("language_probability"),
+                    "is_live": bool(transcript.get("live", False)),
+                    "source": transcript.get("source"),
+                    "meeting_code": transcript.get("meeting_code"),
+                    "source_url": transcript.get("source_url"),
+                    "started_at": transcript.get("started_at"),
+                    "finished_at": transcript.get("finished_at"),
+                    "segment_count": len(segments),
                 }
             )
     return payload
