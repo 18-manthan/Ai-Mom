@@ -1,6 +1,23 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { FileAudio, Info, Radio, RefreshCw, Sparkles, Trash2, UploadCloud } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowUpDown,
+  Copy,
+  FileAudio,
+  Info,
+  LayoutList,
+  MessageSquare,
+  Moon,
+  Radio,
+  Search,
+  Send,
+  Sparkles,
+  Sun,
+  Trash2,
+  UploadCloud,
+} from "lucide-react";
+import iMannLogo from "./assets/iMann.png";
 import "./styles.css";
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
@@ -13,6 +30,7 @@ type Meeting = {
   summary_status: "not_started" | "queued" | "processing" | "completed" | "failed";
   summary_error: string | null;
   summary_preset: NotesPreset | null;
+  generated_notes: GeneratedNote[];
   processing_seconds: number | null;
   summary_seconds: number | null;
   cleanup_status: "not_started" | "queued" | "processing" | "completed" | "failed";
@@ -32,7 +50,22 @@ type Meeting = {
 
 type NotesPreset = "short" | "detailed" | "citations" | "actions" | "team_sync" | "advice";
 
-type Tab = "notes" | "transcript" | "insights";
+type Tab = "chat" | "notes" | "transcript" | "insights";
+type Theme = "dark" | "light";
+
+type ChatMessage = {
+  role: "user" | "assistant";
+  text: string;
+};
+
+type GeneratedNote = {
+  id: string;
+  preset: NotesPreset | string;
+  title: string;
+  content: string;
+  created_at: string;
+  seconds?: number | null;
+};
 
 type Segment = {
   start: number;
@@ -56,6 +89,12 @@ const NOTES_PRESETS: Array<{ value: NotesPreset; label: string; tag?: string }> 
   { value: "team_sync", label: "Team Sync - Project Updates" },
   { value: "advice", label: "Smart AI Advice", tag: "NEW" },
 ];
+
+const SIDEBAR_ITEMS = [
+  { label: "My Meetings", icon: FileAudio, active: true },
+];
+
+const GENERATING_NOTE_ID = "__generating_note__";
 
 function formatTime(seconds: number) {
   const total = Math.max(0, Math.floor(seconds));
@@ -112,6 +151,163 @@ function formatMeetingStart(meeting: Meeting) {
   return `${day} · ${date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
 }
 
+function formatMeetingDateLabel(meeting: Meeting) {
+  const date = meetingStartDate(meeting);
+  return date.toLocaleDateString([], {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+function startOfDay(date: Date) {
+  const next = new Date(date);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+function startOfWeek(date: Date) {
+  const next = startOfDay(date);
+  const day = next.getDay();
+  const offset = day === 0 ? 6 : day - 1;
+  next.setDate(next.getDate() - offset);
+  return next;
+}
+
+function isSameDay(first: Date, second: Date) {
+  return startOfDay(first).getTime() === startOfDay(second).getTime();
+}
+
+function isSameWeek(first: Date, second: Date) {
+  return startOfWeek(first).getTime() === startOfWeek(second).getTime();
+}
+
+function formatDayGroupLabel(date: Date) {
+  return date.toLocaleDateString([], {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+  });
+}
+
+function formatWeekGroupLabel(date: Date) {
+  const start = startOfWeek(date);
+  const end = new Date(start);
+  end.setDate(start.getDate() + 6);
+  const sameMonth = start.getMonth() === end.getMonth();
+  const sameYear = start.getFullYear() === end.getFullYear();
+  const startMonth = start.toLocaleDateString([], { month: "long" });
+  const endMonth = end.toLocaleDateString([], { month: "long" });
+
+  if (sameMonth) {
+    return `${startMonth} ${start.getDate()} - ${end.getDate()}, ${end.getFullYear()}`;
+  }
+  if (sameYear) {
+    return `${startMonth} ${start.getDate()} - ${endMonth} ${end.getDate()}, ${end.getFullYear()}`;
+  }
+  return `${startMonth} ${start.getDate()}, ${start.getFullYear()} - ${endMonth} ${end.getDate()}, ${end.getFullYear()}`;
+}
+
+function formatMeetingRowSub(meeting: Meeting, groupKind: "day" | "week") {
+  const date = meetingStartDate(meeting);
+  if (groupKind === "day") {
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  }
+  return date.toLocaleDateString([], { day: "numeric", month: "short" });
+}
+
+function formatMeetingClock(meeting: Meeting) {
+  return meetingStartDate(meeting).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+function meetingPeople(meeting: Meeting) {
+  if (meeting.is_live) return "you";
+  return meeting.source ? sourceLabel(meeting.source) : "Uploaded recording";
+}
+
+function speakerInitials(name: string) {
+  const cleaned = name.replace(/[()]/g, " ").trim();
+  const words = cleaned.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "SP";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return `${words[0][0]}${words[1][0]}`.toUpperCase();
+}
+
+function notesPresetLabel(preset: NotesPreset | null) {
+  return NOTES_PRESETS.find((item) => item.value === preset)?.label ?? "Meeting notes";
+}
+
+function summaryPreview(summary: string | null) {
+  if (!summary) return "Generate AI notes from one of the presets...";
+  return summary.replace(/\s+/g, " ").replace(/[#*_`>-]/g, "").trim().slice(0, 90);
+}
+
+function notePreview(note: GeneratedNote) {
+  return note.content.replace(/\s+/g, " ").replace(/[#*_`>-]/g, "").trim().slice(0, 82);
+}
+
+function formatNoteTime(value: string | null | undefined) {
+  const date = parseBackendDate(value);
+  if (!date) return "--";
+  return date.toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function renderSummaryContent(summary: string) {
+  const elements: React.ReactNode[] = [];
+  let listItems: string[] = [];
+
+  const flushList = () => {
+    if (listItems.length === 0) return;
+    const items = listItems;
+    listItems = [];
+    elements.push(
+      <ul key={`list-${elements.length}`}>
+        {items.map((item, index) => (
+          <li key={`${item}-${index}`}>{item}</li>
+        ))}
+      </ul>,
+    );
+  };
+
+  summary.split(/\r?\n/).forEach((rawLine, index) => {
+    const line = rawLine.trim();
+    if (!line) {
+      flushList();
+      return;
+    }
+
+    const heading = line.match(/^#{1,4}\s+(.+)$/);
+    if (heading) {
+      flushList();
+      elements.push(<h2 key={`h-${index}`}>{heading[1].replace(/\*\*/g, "")}</h2>);
+      return;
+    }
+
+    if (/^\*\*.+\*\*:?$/.test(line)) {
+      flushList();
+      elements.push(<h2 key={`strong-${index}`}>{line.replace(/\*\*/g, "").replace(/:$/, "")}</h2>);
+      return;
+    }
+
+    const bullet = line.match(/^[-*•]\s+(.+)$/);
+    if (bullet) {
+      listItems.push(bullet[1].replace(/\*\*/g, ""));
+      return;
+    }
+
+    flushList();
+    elements.push(<p key={`p-${index}`}>{line.replace(/\*\*/g, "")}</p>);
+  });
+
+  flushList();
+  return elements;
+}
+
 function formatBackendDateTime(value: string | null) {
   const date = parseBackendDate(value);
   return date ? date.toLocaleString() : "--";
@@ -134,21 +330,35 @@ function App() {
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState("");
+  const [backendOnline, setBackendOnline] = useState(true);
   const [transcriptView, setTranscriptView] = useState<"raw" | "clean">("raw");
   const [activeTab, setActiveTab] = useState<Tab>("notes");
   const [notesPreset, setNotesPreset] = useState<NotesPreset>("short");
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const [chatQuestion, setChatQuestion] = useState("");
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [theme, setTheme] = useState<Theme>(() => {
+    const savedTheme = window.localStorage.getItem("mom.theme");
+    return savedTheme === "dark" ? "dark" : "light";
+  });
 
   async function loadMeetings() {
-    const response = await fetch(`${API_BASE}/api/meetings`);
-    const data = (await response.json()) as Meeting[];
-    setMeetings(data);
-    if (selectedId === null && data.length > 0) {
-      setSelectedId(data[0].id);
+    const response = await fetch(`${API_BASE}/api/meetings`, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error("Backend is not reachable.");
     }
+    const data = (await response.json()) as Meeting[];
+    setBackendOnline(true);
+    setMeetings(data);
   }
 
   async function loadDetail(id: number) {
-    const response = await fetch(`${API_BASE}/api/meetings/${id}`);
+    const response = await fetch(`${API_BASE}/api/meetings/${id}`, { cache: "no-store" });
+    if (!response.ok) {
+      throw new Error("Could not load meeting.");
+    }
+    setBackendOnline(true);
     setDetail((await response.json()) as MeetingDetail);
   }
 
@@ -181,21 +391,28 @@ function App() {
     }
   }
 
-  async function generateSummary() {
+  async function generateSummary(presetOverride?: NotesPreset) {
     if (!detail) return;
     setMessage("");
+    const preset = presetOverride ?? notesPreset;
+    setNotesPreset(preset);
+    setSelectedNoteId(GENERATING_NOTE_ID);
 
     try {
       const response = await fetch(`${API_BASE}/api/meetings/${detail.id}/summary`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ preset: notesPreset }),
+        body: JSON.stringify({ preset }),
       });
       if (!response.ok) {
         const error = await response.json();
         throw new Error(error.detail ?? "Could not start summary generation");
       }
       const meeting = (await response.json()) as Meeting;
+      const cachedNote = meeting.generated_notes?.find((note) => note.preset === preset && note.content);
+      if (cachedNote) {
+        setSelectedNoteId(cachedNote.id);
+      }
       setDetail({ ...detail, ...meeting });
       await loadMeetings();
     } catch (error) {
@@ -220,6 +437,39 @@ function App() {
       await loadMeetings();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not start cleanup");
+    }
+  }
+
+  async function askMeetingChat() {
+    if (!detail || !chatQuestion.trim()) return;
+    const question = chatQuestion.trim();
+    setMessage("");
+    setChatQuestion("");
+    setChatMessages((items) => [...items, { role: "user", text: question }]);
+    setChatLoading(true);
+
+    try {
+      const response = await fetch(`${API_BASE}/api/meetings/${detail.id}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ question }),
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail ?? "Could not answer this question");
+      }
+      const data = (await response.json()) as { answer: string };
+      setChatMessages((items) => [...items, { role: "assistant", text: data.answer }]);
+    } catch (error) {
+      setChatMessages((items) => [
+        ...items,
+        {
+          role: "assistant",
+          text: error instanceof Error ? error.message : "Could not answer this question",
+        },
+      ]);
+    } finally {
+      setChatLoading(false);
     }
   }
 
@@ -254,12 +504,26 @@ function App() {
   }
 
   useEffect(() => {
-    loadMeetings().catch(() => setMessage("Backend is not reachable."));
+    loadMeetings().catch(() => {
+      setBackendOnline(false);
+      setMessage("Backend is not reachable.");
+    });
   }, []);
 
   useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem("mom.theme", theme);
+  }, [theme]);
+
+  useEffect(() => {
     if (selectedId !== null) {
-      loadDetail(selectedId).catch(() => setMessage("Could not load meeting."));
+      setChatMessages([]);
+      setChatQuestion("");
+      setSelectedNoteId(null);
+      loadDetail(selectedId).catch(() => {
+        setBackendOnline(false);
+        setMessage("Could not load meeting. Backend may be stopped.");
+      });
     }
   }, [selectedId]);
 
@@ -273,6 +537,15 @@ function App() {
   }, [detail, transcriptView]);
 
   useEffect(() => {
+    if (!detail || detail.summary_status === "queued" || detail.summary_status === "processing") return;
+    const notes = detail.generated_notes ?? [];
+    if (notes.length === 0) return;
+    if (selectedNoteId === GENERATING_NOTE_ID) {
+      setSelectedNoteId(notes[0].id);
+    }
+  }, [detail, selectedNoteId]);
+
+  useEffect(() => {
     const active =
       detail?.status === "uploaded" ||
       detail?.status === "processing" ||
@@ -283,8 +556,14 @@ function App() {
     if (!active || selectedId === null) return;
 
     const timer = window.setInterval(() => {
-      loadMeetings().catch(() => undefined);
-      loadDetail(selectedId).catch(() => undefined);
+      loadMeetings().catch(() => {
+        setBackendOnline(false);
+        setMessage("Backend is not reachable. Live status may be stale.");
+      });
+      loadDetail(selectedId).catch(() => {
+        setBackendOnline(false);
+        setMessage("Backend is not reachable. Live status may be stale.");
+      });
     }, 2500);
     return () => window.clearInterval(timer);
   }, [detail?.status, detail?.cleanup_status, detail?.summary_status, selectedId]);
@@ -299,10 +578,15 @@ function App() {
     detail.summary_status !== "queued" &&
     detail.summary_status !== "processing";
 
+  const summaryBusy =
+    detail?.summary_status === "queued" || detail?.summary_status === "processing";
+
   const canCleanup =
     detail?.status === "completed" &&
     detail.cleanup_status !== "queued" &&
     detail.cleanup_status !== "processing";
+
+  const canChat = detail?.status === "completed";
 
   const isTranscriptReady = detail?.status === "completed";
 
@@ -313,89 +597,169 @@ function App() {
         ? detail?.segments ?? []
         : [];
 
+  const notesHistory = useMemo<GeneratedNote[]>(() => {
+    if (!detail) return [];
+    if (detail.generated_notes?.length) return detail.generated_notes;
+    if (!detail.summary) return [];
+    return [
+      {
+        id: "legacy-summary",
+        preset: detail.summary_preset ?? "short",
+        title: notesPresetLabel(detail.summary_preset),
+        content: detail.summary,
+        created_at: detail.updated_at,
+        seconds: detail.summary_seconds,
+      },
+    ];
+  }, [detail]);
+
+  const selectedNote =
+    selectedNoteId === null || selectedNoteId === GENERATING_NOTE_ID
+      ? null
+      : notesHistory.find((note) => note.id === selectedNoteId) ?? null;
+
+  const groupedMeetings = useMemo(() => {
+    const now = new Date();
+    const groups: Array<{
+      key: string;
+      label: string;
+      kind: "day" | "week";
+      items: Meeting[];
+    }> = [];
+    const byKey = new Map<string, (typeof groups)[number]>();
+
+    meetings.forEach((meeting) => {
+      const date = meetingStartDate(meeting);
+      const kind: "day" | "week" = isSameWeek(date, now) ? "day" : "week";
+      const keyDate = kind === "day" ? startOfDay(date) : startOfWeek(date);
+      const key = `${kind}-${keyDate.toISOString().slice(0, 10)}`;
+      let group = byKey.get(key);
+      if (!group) {
+        group = {
+          key,
+          kind,
+          label: kind === "day" ? formatDayGroupLabel(date) : formatWeekGroupLabel(date),
+          items: [],
+        };
+        byKey.set(key, group);
+        groups.push(group);
+      }
+      group.items.push(meeting);
+    });
+
+    return groups;
+  }, [meetings]);
+
   return (
     <main className="shell">
       <aside className="sidebar">
         <div className="brand">
-          <FileAudio size={24} />
-          <div>
-            <h1>MOM</h1>
-            <p>Meeting transcription</p>
-          </div>
+          <img src={iMannLogo} alt="iMann" />
         </div>
 
-        <details className="upload-drawer">
-          <summary>
-            <UploadCloud size={16} />
-            Upload recording
-          </summary>
-          <div className="upload-drawer-body">
-            <label className="file-drop compact">
-              <UploadCloud size={20} />
-              <span>{file ? file.name : "Choose audio/video file"}</span>
-              <input
-                type="file"
-                accept=".mp3,.wav,.mp4,.m4a,audio/*,video/mp4"
-                onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-              />
-            </label>
-            <button className="primary" disabled={!file || uploading} onClick={upload}>
-              {uploading ? "Uploading..." : "Upload"}
-            </button>
-            {message && <p className="error">{message}</p>}
-          </div>
-        </details>
+        <button
+          className="theme-toggle"
+          type="button"
+          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
+          aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
+        >
+          {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+          <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
+        </button>
 
-        <div className="list-head">
-          <span>Meetings</span>
-          <button className="icon-button" title="Refresh" onClick={loadMeetings}>
-            <RefreshCw size={16} />
-          </button>
-        </div>
-
-        <nav className="meeting-list">
-          {meetings.map((meeting) => (
-            <div
-              key={meeting.id}
-              className={meeting.id === selectedId ? "meeting active" : "meeting"}
-            >
-              <button className="meeting-main" onClick={() => setSelectedId(meeting.id)}>
-                <span>{meeting.original_filename}</span>
-                <small className="meeting-start">{formatMeetingStart(meeting)}</small>
-                <small data-status={meeting.status}>
-                  {statusLabel(meeting)}
-                  {meeting.processing_seconds !== null &&
-                    ` · ${formatDuration(meeting.processing_seconds)}`}
-                </small>
-                {shouldShowMeetingMetaBadge(meeting) && (
-                  <span className={meeting.status === "processing" && meeting.is_live ? "live-badge active" : "live-badge"}>
-                    {meeting.is_live && (
-                      <Radio size={12} />
-                    )}
-                    {meeting.source ? sourceLabel(meeting.source) : ""}
-                    {meeting.source && meeting.segment_count ? " · " : ""}
-                    {meeting.segment_count ? `${meeting.segment_count} lines` : ""}
-                  </span>
-                )}
-              </button>
+        <nav className="side-nav" aria-label="Main navigation">
+          {SIDEBAR_ITEMS.map((item) => {
+            const Icon = item.icon;
+            return (
               <button
-                className="delete-button"
-                title="Delete meeting"
-                onClick={() => deleteMeeting(meeting)}
+                className={item.active ? "active" : ""}
+                type="button"
+                key={item.label}
+                onClick={() => {
+                  setSelectedId(null);
+                  setDetail(null);
+                  setActiveTab("notes");
+                  loadMeetings().catch(() => {
+                    setBackendOnline(false);
+                    setMessage("Backend is not reachable.");
+                  });
+                }}
               >
-                <Trash2 size={16} />
+                <Icon size={17} />
+                <span>{item.label}</span>
               </button>
-            </div>
-          ))}
-          {meetings.length === 0 && <p className="empty">No meetings yet.</p>}
+            );
+          })}
+          <label className="side-upload-tab">
+            <UploadCloud size={17} />
+            <span>Upload Recording</span>
+            <input
+              type="file"
+              accept=".mp3,.wav,.mp4,.m4a,audio/*,video/mp4"
+              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+            />
+          </label>
         </nav>
+
+        {file && (
+          <div className="side-upload-selected">
+            <span title={file.name}>{file.name}</span>
+            <button className="side-upload-action" disabled={uploading} onClick={upload} type="button">
+              {uploading ? "Uploading..." : "Upload selected file"}
+            </button>
+          </div>
+        )}
       </aside>
 
+      <div className="creator-credit">
+        <span>Made with love by</span>
+        <strong>Manthan Chouhan</strong>
+        <small>AI DEV</small>
+      </div>
+
       <section className="content">
+        <div className="top-banner">
+          <strong>Use the iMann Chrome extension with Google Meet captions for live capture.</strong>
+        </div>
+
+        {!backendOnline && (
+          <div className="notice warning-box">
+            Backend is not reachable. This view may be showing the last known meeting state.
+          </div>
+        )}
+
+        {!detail && (
+          <>
+            <header className="page-head">
+              <div className="page-title">
+                <LayoutList size={18} />
+                <h2>My Meetings</h2>
+              </div>
+            </header>
+            {message && <p className="error page-error">{message}</p>}
+
+            <label className="search-bar">
+              <Search size={19} />
+              <input placeholder="Search for keywords, participants, labels, and more..." />
+            </label>
+
+            <div className="meeting-toolbar">
+              <button className="toolbar-chip" type="button" onClick={loadMeetings}>
+                <ArrowUpDown size={15} />
+                Refresh meetings
+              </button>
+            </div>
+          </>
+        )}
+
         {detail && (
           <>
             <header className="detail-head">
               <div>
+                <button className="back-link" type="button" onClick={() => { setSelectedId(null); setDetail(null); }}>
+                  <ArrowLeft size={16} />
+                  My Meetings
+                </button>
                 <h2>{detail.original_filename}</h2>
                 <p>
                   <strong>{detailStatusText(detail)}</strong>
@@ -448,37 +812,300 @@ function App() {
             </header>
 
             {detail.error && <div className="notice error-box">{detail.error}</div>}
+
+            <nav className="tabs" aria-label="Meeting dashboard">
+              <button className={activeTab === "chat" ? "selected" : ""} disabled={!detail} onClick={() => setActiveTab("chat")}>
+                <MessageSquare size={15} />
+                AI Chat
+              </button>
+              <button className={activeTab === "transcript" ? "selected" : ""} disabled={!detail} onClick={() => setActiveTab("transcript")}>
+                Transcript
+              </button>
+              <button className={activeTab === "notes" ? "selected" : ""} disabled={!detail} onClick={() => setActiveTab("notes")}>
+                Notes
+              </button>
+              <button className={activeTab === "insights" ? "selected" : ""} disabled={!detail} onClick={() => setActiveTab("insights")}>
+                Insights
+              </button>
+            </nav>
           </>
         )}
 
-        <nav className="tabs" aria-label="Meeting dashboard">
-          <button className={activeTab === "transcript" ? "selected" : ""} disabled={!detail} onClick={() => setActiveTab("transcript")}>
-            Transcript
-          </button>
-          <button className={activeTab === "notes" ? "selected" : ""} disabled={!detail} onClick={() => setActiveTab("notes")}>
-            Notes
-          </button>
-          <button className={activeTab === "insights" ? "selected" : ""} disabled={!detail} onClick={() => setActiveTab("insights")}>
-            Insights
-          </button>
-        </nav>
+        <div className="workspace-scroll">
+          {!detail && (
+            <section className="meeting-dashboard">
+              {meetings.length === 0 && <p className="empty">No meetings yet.</p>}
+              {groupedMeetings.map((group) => (
+                <React.Fragment key={group.key}>
+                  <div className="meeting-date-group">{group.label}</div>
+                  {group.items.map((meeting) => (
+                    <article className="meeting-row" key={meeting.id}>
+                      <button className="row-checkbox" type="button" aria-label="Select meeting" />
+                      <div className="row-time">
+                        <strong>{meeting.processing_seconds !== null ? formatDuration(meeting.processing_seconds) : statusLabel(meeting)}</strong>
+                        <span>{formatMeetingRowSub(meeting, group.kind)}</span>
+                      </div>
+                      <button
+                        className="row-main"
+                        type="button"
+                        onClick={() => {
+                          setSelectedId(meeting.id);
+                          setActiveTab(meeting.summary ? "notes" : "transcript");
+                        }}
+                      >
+                        <span className="row-avatar">{meeting.original_filename.slice(0, 1).toUpperCase()}</span>
+                        <span>
+                          <strong>{meeting.original_filename}</strong>
+                          <small>{meetingPeople(meeting)}</small>
+                          {meeting.summary && <p>{meeting.summary.slice(0, 190)}...</p>}
+                        </span>
+                      </button>
+                      <div className="row-actions">
+                        {shouldShowMeetingMetaBadge(meeting) && (
+                          <span className={meeting.status === "processing" && meeting.is_live ? "live-badge active" : "live-badge"}>
+                            {meeting.is_live && <Radio size={12} />}
+                            {meeting.source ? sourceLabel(meeting.source) : ""}
+                            {meeting.source && meeting.segment_count ? " · " : ""}
+                            {meeting.segment_count ? `${meeting.segment_count} lines` : ""}
+                          </span>
+                        )}
+                        <button
+                          title="Delete meeting"
+                          type="button"
+                          onClick={() => deleteMeeting(meeting)}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+                    </article>
+                  ))}
+                </React.Fragment>
+              ))}
+            </section>
+          )}
 
-        {!detail && (
-          <div className="blank">
-            <FileAudio size={36} />
-            <p>Select a meeting from the list, or use Upload recording in the sidebar.</p>
-          </div>
-        )}
+          {detail && (
+            <>
+              {activeTab === "chat" && (
+                <section className="dashboard-panel">
+                  <section className="meeting-chat">
+                    <aside className="chat-rail">
+                      <button className="new-note-button" type="button" onClick={() => {
+                        setChatMessages([]);
+                        setChatQuestion("");
+                      }}>
+                        + New Chat
+                      </button>
+                      <button className="note-thread active" type="button">
+                        <MessageSquare size={16} />
+                        <span>
+                          <strong>Meeting Q&A</strong>
+                          <small>Ask anything from this transcript</small>
+                          <time>{formatMeetingStart(detail)}</time>
+                        </span>
+                      </button>
+                    </aside>
 
-        {detail && (
-          <>
-            {activeTab === "notes" && (
-              <section className="dashboard-panel">
-                <div className="tool-row">
+                    <article className="chat-workspace">
+                      <div className="chat-center">
+                        <h3>
+                          <Sparkles size={22} />
+                          Ask iMann about this meeting
+                        </h3>
+                        <div className="prompt-grid chat-suggestions">
+                          {[
+                            "What are the key decisions?",
+                            "List action items",
+                            "What risks were discussed?",
+                            "Summarize follow-ups",
+                          ].map((prompt) => (
+                            <button
+                              key={prompt}
+                              type="button"
+                              disabled={!canChat || chatLoading}
+                              onClick={() => setChatQuestion(prompt)}
+                            >
+                              <span>✨</span>
+                              <strong>{prompt}</strong>
+                            </button>
+                          ))}
+                        </div>
+
+                        <div className="chat-thread" aria-live="polite">
+                          {chatMessages.length === 0 && (
+                            <div className="chat-empty">
+                              {canChat
+                                ? "Ask a question about decisions, blockers, action items, speakers, or any topic discussed in this meeting."
+                                : "AI Chat will be available after transcription is completed."}
+                            </div>
+                          )}
+                          {chatMessages.map((item, index) => (
+                            <div className={`chat-bubble ${item.role}`} key={`${item.role}-${index}`}>
+                              <strong>{item.role === "user" ? "You" : "iMann"}</strong>
+                              <p>{item.text}</p>
+                            </div>
+                          ))}
+                          {chatLoading && (
+                            <div className="chat-bubble assistant">
+                              <strong>iMann</strong>
+                              <p>Thinking through the meeting transcript...</p>
+                            </div>
+                          )}
+                        </div>
+
+                        <form
+                          className="chat-composer"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            askMeetingChat();
+                          }}
+                        >
+                          <textarea
+                            value={chatQuestion}
+                            disabled={!canChat || chatLoading}
+                            placeholder={
+                              canChat
+                                ? "Ask anything about this meeting..."
+                                : "Chat is available after transcription is completed."
+                            }
+                            onChange={(event) => setChatQuestion(event.target.value)}
+                          />
+                          <button className="primary" type="submit" disabled={!canChat || chatLoading || !chatQuestion.trim()}>
+                            <Send size={15} />
+                            Ask AI
+                          </button>
+                        </form>
+                      </div>
+                    </article>
+                  </section>
+                </section>
+              )}
+
+              {activeTab === "notes" && (
+                <section className="dashboard-panel">
+                  <section className="notes-studio">
+                    <aside className="notes-rail">
+                      <button
+                        className="new-note-button"
+                        type="button"
+                        onClick={() => setSelectedNoteId(null)}
+                      >
+                        + New notes
+                      </button>
+                      {notesHistory.length === 0 && (
+                        <p className="notes-empty">Generated notes will appear here.</p>
+                      )}
+                      {notesHistory.map((note) => (
+                        <button
+                          className={selectedNote?.id === note.id ? "note-thread active" : "note-thread"}
+                          key={note.id}
+                          type="button"
+                          onClick={() => setSelectedNoteId(note.id)}
+                        >
+                          <FileAudio size={16} />
+                          <span>
+                            <strong>{note.title}</strong>
+                            <small>{notePreview(note)}</small>
+                            <time>{formatNoteTime(note.created_at)}</time>
+                          </span>
+                        </button>
+                      ))}
+                    </aside>
+
+                    <section className="notes-main-workspace">
+                      {selectedNote ? (
+                        <article className="summary-document notes-viewer">
+                          <header className="document-head">
+                            <h3>
+                              <FileAudio size={18} />
+                              {selectedNote.title}
+                            </h3>
+                            <button
+                              type="button"
+                              title="Copy notes"
+                              onClick={() => navigator.clipboard?.writeText(selectedNote.content)}
+                            >
+                              <Copy size={17} />
+                            </button>
+                          </header>
+                          <div className="summary-content">
+                            {renderSummaryContent(selectedNote.content)}
+                          </div>
+                        </article>
+                      ) : selectedNoteId === GENERATING_NOTE_ID ? (
+                        <article className="summary-document notes-viewer">
+                          <header className="document-head">
+                            <h3>
+                              <Sparkles size={18} />
+                              Generating {notesPresetLabel(notesPreset)}...
+                            </h3>
+                          </header>
+                          <div className="summary-content">
+                            <p>iMann is generating this note. It will open here and save in the sidebar automatically.</p>
+                          </div>
+                        </article>
+                      ) : (
+                        <section className="notes-generator">
+                          <section className="ai-prompt-panel">
+                            <h3>
+                              <Sparkles size={22} />
+                              Generate AI notes
+                            </h3>
+                            <p className="prompt-help">
+                              Click a note type. The generated response will open as a new saved note.
+                            </p>
+                            <div className="prompt-grid">
+                              {NOTES_PRESETS.map((preset) => {
+                                const isActivePreset = notesPreset === preset.value;
+                                const isGeneratingPreset = summaryBusy && isActivePreset;
+                                return (
+                                  <button
+                                    key={preset.value}
+                                    type="button"
+                                    className={isActivePreset ? "selected" : ""}
+                                    disabled={!canGenerateSummary}
+                                    onClick={() => generateSummary(preset.value)}
+                                    title={
+                                      detail.status !== "completed"
+                                        ? "Available after transcription is completed"
+                                        : isGeneratingPreset
+                                          ? "Generating this note type..."
+                                          : `Generate ${preset.label}`
+                                    }
+                                  >
+                                    <span>{isGeneratingPreset ? "…" : "✨"}</span>
+                                    <strong>{isGeneratingPreset ? "Generating..." : preset.label}</strong>
+                                    {preset.tag && <small>{preset.tag}</small>}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            {!canGenerateSummary && (
+                              <p className="prompt-help">
+                                {summaryBusy
+                                  ? "AI notes are being generated. The new note will open automatically when ready."
+                                  : "AI notes will be available after transcription is completed."}
+                              </p>
+                            )}
+                          </section>
+
+                          {detail.summary_error && <div className="notice error-box inline-error">{detail.summary_error}</div>}
+                        </section>
+                      )}
+                    </section>
+                  </section>
+                </section>
+              )}
+
+              {activeTab === "transcript" && (
+                <section className="dashboard-panel">
+                <div className="tool-row transcript-cleanup-card">
                   <div>
                     <h3>AI Cleanup</h3>
                     <p>
-                      {detail.cleanup_status.replace("_", " ")}
+                      Make the transcript cleaner by reducing repeated captions and improving readability.
+                      {" "}
+                      Status: {detail.cleanup_status.replace("_", " ")}
                       {detail.cleanup_seconds !== null &&
                         ` · ${formatDuration(detail.cleanup_seconds)}`}
                     </p>
@@ -488,53 +1115,7 @@ function App() {
                     AI Cleanup
                   </button>
                 </div>
-                {detail.cleanup_error && <div className="notice error-box">{detail.cleanup_error}</div>}
-
-                <div className="notes-builder">
-                  <label>
-                    <span>AI Notes Preset</span>
-                    <select
-                      value={notesPreset}
-                      onChange={(event) => setNotesPreset(event.target.value as NotesPreset)}
-                    >
-                      {NOTES_PRESETS.map((preset) => (
-                        <option key={preset.value} value={preset.value}>
-                          {preset.label}{preset.tag ? ` [${preset.tag}]` : ""}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <button className="primary inline" disabled={!canGenerateSummary} onClick={generateSummary}>
-                    <Sparkles size={16} />
-                    Generate Notes
-                  </button>
-                </div>
-
-                <section className="summary">
-                  <div className="summary-head">
-                    <div>
-                      <h3>Notes</h3>
-                      <p>
-                        {detail.summary_status.replace("_", " ")}
-                        {detail.summary_preset && ` · ${detail.summary_preset}`}
-                        {detail.summary_seconds !== null &&
-                          ` · ${formatDuration(detail.summary_seconds)}`}
-                      </p>
-                    </div>
-                  </div>
-                  {detail.summary_error && <div className="notice error-box">{detail.summary_error}</div>}
-                  <pre>
-                    {detail.summary ??
-                      (detail.summary_status === "processing" || detail.summary_status === "queued"
-                        ? "Generating notes..."
-                        : "Choose a preset and generate notes after transcription is completed.")}
-                  </pre>
-                </section>
-              </section>
-            )}
-
-            {activeTab === "transcript" && (
-              <section className="dashboard-panel">
+                {detail.cleanup_error && <div className="notice error-box inline-error">{detail.cleanup_error}</div>}
                 <div className="transcript-head">
                   <div>
                     <h3>{detail.is_live && detail.status === "processing" ? "Live Transcript" : "Transcript"}</h3>
@@ -567,22 +1148,25 @@ function App() {
                       : "Transcript will appear after processing."}
                   </div>
                 )}
-                {displayedSegments.map((segment, index) => (
-                  <article className="line" key={`${segment.start}-${index}`}>
-                    <div className="meta">
-                      <span>{segment.speaker}</span>
-                      <time>
-                        {formatTime(segment.start)} - {formatTime(segment.end)}
-                      </time>
-                    </div>
-                    <p>{segment.text}</p>
-                  </article>
-                ))}
+                <div className="transcript-stream">
+                  {displayedSegments.map((segment, index) => (
+                    <article className="line" key={`${segment.start}-${index}`}>
+                      <div className="meta">
+                        <span className="speaker-avatar">{speakerInitials(segment.speaker)}</span>
+                        <time>{formatTime(segment.start)}</time>
+                      </div>
+                      <div className="line-body">
+                        <strong>{segment.speaker}</strong>
+                        <p>{segment.text}</p>
+                      </div>
+                    </article>
+                  ))}
+                </div>
               </section>
-            )}
+              )}
 
-            {activeTab === "insights" && (
-              <section className="dashboard-panel insights-grid">
+              {activeTab === "insights" && (
+                <section className="dashboard-panel insights-grid">
                 <div className="metric">
                   <span>Speakers</span>
                   <strong>{speakers.length || 0}</strong>
@@ -604,9 +1188,10 @@ function App() {
                   <strong>{detail.summary_preset ?? "--"}</strong>
                 </div>
               </section>
-            )}
-          </>
-        )}
+              )}
+            </>
+          )}
+        </div>
       </section>
     </main>
   );

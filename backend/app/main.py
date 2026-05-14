@@ -12,15 +12,20 @@ from .config import settings
 from .db import get_db, init_db
 from .models import Meeting
 from .services.audio import validate_media_file
+from .services.chat import answer_meeting_question
 from .services.live import append_live_segment, compact_live_segments, finish_live_meeting, start_live_meeting
 from .services.processor import process_cleanup, process_meeting, process_summary
 
 
-app = FastAPI(title="MOM AI Meeting Transcription")
+app = FastAPI(title="iMann AI Meeting Transcription")
 
 
 class SummaryRequest(BaseModel):
     preset: str = "short"
+
+
+class ChatRequest(BaseModel):
+    question: str
 
 
 class LiveMeetingStartRequest(BaseModel):
@@ -100,6 +105,10 @@ def _meeting_payload(meeting: Meeting, include_metadata: bool = True) -> dict:
     if meeting.summary and summary_status == "not_started":
         summary_status = "completed"
     cleanup_status = meeting.cleanup_status or "not_started"
+    try:
+        generated_notes = json.loads(meeting.generated_notes or "[]")
+    except json.JSONDecodeError:
+        generated_notes = []
 
     payload = {
         "id": meeting.id,
@@ -109,6 +118,7 @@ def _meeting_payload(meeting: Meeting, include_metadata: bool = True) -> dict:
         "summary_status": summary_status,
         "summary_error": meeting.summary_error,
         "summary_preset": meeting.summary_preset,
+        "generated_notes": generated_notes if isinstance(generated_notes, list) else [],
         "processing_seconds": meeting.processing_seconds,
         "summary_seconds": meeting.summary_seconds,
         "cleanup_status": cleanup_status,
@@ -121,6 +131,19 @@ def _meeting_payload(meeting: Meeting, include_metadata: bool = True) -> dict:
     if include_metadata:
         payload.update(_transcript_metadata(meeting))
     return payload
+
+
+def _cached_generated_note(meeting: Meeting, preset: str) -> dict | None:
+    try:
+        generated_notes = json.loads(meeting.generated_notes or "[]")
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(generated_notes, list):
+        return None
+    for note in generated_notes:
+        if note.get("preset") == preset and note.get("content"):
+            return note
+    return None
 
 
 def _delete_file(path_value: str | None) -> None:
@@ -257,9 +280,21 @@ def start_summary(
     if meeting.summary_status == "processing":
         return _meeting_payload(meeting)
 
+    preset = request.preset if request else "short"
+    cached_note = _cached_generated_note(meeting, preset)
+    if cached_note:
+        meeting.summary = cached_note.get("content")
+        meeting.summary_status = "completed"
+        meeting.summary_error = None
+        meeting.summary_preset = preset
+        meeting.summary_seconds = cached_note.get("seconds")
+        db.commit()
+        db.refresh(meeting)
+        return _meeting_payload(meeting)
+
     meeting.summary_status = "queued"
     meeting.summary_error = None
-    meeting.summary_preset = (request.preset if request else "short")
+    meeting.summary_preset = preset
     db.commit()
     db.refresh(meeting)
 
@@ -288,6 +323,45 @@ def start_cleanup(
 
     background_tasks.add_task(process_cleanup, meeting.id)
     return _meeting_payload(meeting)
+
+
+@app.post("/api/meetings/{meeting_id}/chat")
+def ask_meeting_chat(
+    meeting_id: int,
+    request: ChatRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    meeting = db.get(Meeting, meeting_id)
+    if meeting is None:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+    if meeting.status != "completed":
+        raise HTTPException(status_code=409, detail="Meeting transcript is available after transcription is completed")
+    if not meeting.transcript_path:
+        raise HTTPException(status_code=404, detail="Transcript not found")
+
+    path = Path(meeting.transcript_path)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Transcript not found")
+
+    transcript = _load_transcript(path)
+    segments = transcript.get("cleaned_segments") or transcript.get("segments") or []
+    if not isinstance(segments, list):
+        segments = []
+    if transcript.get("live", False):
+        segments = compact_live_segments(segments)
+
+    try:
+        answer = answer_meeting_question(
+            segments=segments,
+            question=request.question,
+            meeting_title=meeting.original_filename,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"answer": answer}
 
 
 @app.get("/api/meetings/{meeting_id}")

@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const SCRIPT_VERSION = "0.1.13";
+  const SCRIPT_VERSION = "0.1.14";
 
   if (window.__MOM_LIVE_CAPTURE_LOADED__ && window.__MOM_LIVE_CAPTURE_VERSION__ === SCRIPT_VERSION) {
     return;
@@ -18,7 +18,11 @@
   const MAX_TEXT_LENGTH = 1000000;
   const CAPTION_TEXT_WINDOW = 500000;
   const ACTIVE_SESSION_KEY = "mom.activeSession";
+  const PANEL_POSITION_KEY = "mom.panelPosition";
+  const PANEL_MINIMIZED_KEY = "mom.panelMinimized";
   const MAX_PENDING_SEGMENTS = 5000;
+  const MAX_PREVIEW_SEGMENTS = 80;
+  const MAX_RENDERED_PREVIEW_SEGMENTS = 18;
   const MAX_BOTTOM_TEXT_LENGTH = 10000;
   const MAX_CANDIDATES_PER_SCAN = 4;
   const NO_CAPTION_WARNING_MS = 5000;
@@ -43,6 +47,7 @@
     lastCandidateAt: 0,
     lastRecoveryAt: 0,
     nodeSnapshots: new WeakMap(),
+    isMinimized: window.localStorage.getItem(PANEL_MINIMIZED_KEY) === "true",
   };
 
   const ui = createPanel();
@@ -58,45 +63,63 @@
     root.id = "mom-live-capture";
     root.innerHTML = `
       <div class="mom-panel">
-        <div class="mom-head">
+        <div class="mom-head" data-drag-handle="true">
           <div class="mom-title">
-            <strong>MOM Live Capture</strong>
-            <span>Google Meet captions · v${SCRIPT_VERSION}</span>
+            <strong>iMann</strong>
+            <span>Google Meet captions</span>
           </div>
-          <span class="mom-pill" data-role="state">Idle</span>
-        </div>
-        <div class="mom-live-strip">
-          <span class="mom-record-dot" data-role="record-dot"></span>
-          <div class="mom-wave" aria-hidden="true">
-            <span></span>
-            <span></span>
-            <span></span>
-            <span></span>
-            <span></span>
+          <div class="mom-state-cluster">
+            <span class="mom-status-dot" data-role="record-dot"></span>
+            <span class="mom-pill" data-role="state">Idle</span>
+            <span class="mom-timer" data-role="timer">00:00</span>
+            <button class="mom-icon-button" type="button" data-action="minimize" title="Minimize">−</button>
           </div>
-          <span class="mom-timer" data-role="timer">00:00</span>
         </div>
-        <div class="mom-row">
-          <label for="mom-api-base">Backend</label>
-          <input id="mom-api-base" type="text" autocomplete="off" />
+
+        <input id="mom-api-base" class="mom-hidden-input" type="hidden" autocomplete="off" />
+
+        <div class="mom-tabs">
+          <button class="mom-tab selected" type="button">Live Transcript</button>
+          <a class="mom-tab" href="${DASHBOARD_URL}" target="_blank" rel="noreferrer">Ask iMann AI</a>
         </div>
-        <div class="mom-actions">
-          <button class="mom-button primary" type="button" data-action="start">Start</button>
-          <button class="mom-button danger" type="button" data-action="stop">Stop</button>
-          <button class="mom-button" type="button" data-action="test">Test</button>
+
+        <div class="mom-live-workspace">
+          <div class="mom-transcript" data-role="transcript">
+            <div class="mom-transcript-empty">
+              <strong>Live captions will appear here.</strong>
+              <span>Turn on Google Meet captions and press Start.</span>
+            </div>
+          </div>
         </div>
-        <div class="mom-meta">
-          <span data-role="count">0 updates</span>
-          <a class="mom-link" href="${DASHBOARD_URL}" target="_blank" rel="noreferrer">Open MOM</a>
-        </div>
-        <div class="mom-transcript" data-role="transcript">
-          <div class="mom-transcript-empty">Live captions will appear here.</div>
-        </div>
+
         <div class="mom-status" data-role="status">Start capture after captions are enabled.</div>
+
+        <div class="mom-bottom-meta">
+          <span data-role="count">0 sent · 0 queued</span>
+        </div>
+
+        <div class="mom-dock">
+          <button class="mom-dock-button start" type="button" data-action="start">Start</button>
+          <button class="mom-dock-button pause" type="button" data-action="pause">Pause</button>
+          <button class="mom-dock-button end" type="button" data-action="end">End</button>
+          <a class="mom-dock-button open" href="${DASHBOARD_URL}" target="_blank" rel="noreferrer">Open</a>
+        </div>
+      </div>
+      <div class="mom-mini" data-drag-handle="true">
+        <span class="mom-record-dot" data-role="mini-record-dot"></span>
+        <div class="mom-mini-body">
+          <strong data-role="mini-state">Idle</strong>
+          <span data-role="mini-preview">iMann capture ready</span>
+        </div>
+        <span class="mom-mini-timer" data-role="mini-timer">00:00</span>
+        <button class="mom-icon-button" type="button" data-action="expand" title="Expand">↗</button>
+        <button class="mom-icon-button danger" type="button" data-action="mini-end" title="End">×</button>
       </div>
     `;
 
     document.documentElement.appendChild(root);
+    restorePanelPosition(root);
+    setupPanelDragging(root);
 
     const apiInput = root.querySelector("#mom-api-base");
     apiInput.value = state.apiBase;
@@ -108,10 +131,84 @@
     });
 
     root.querySelector('[data-action="start"]').addEventListener("click", startCapture);
-    root.querySelector('[data-action="stop"]').addEventListener("click", stopCapture);
-    root.querySelector('[data-action="test"]').addEventListener("click", sendTestSegment);
+    root.querySelector('[data-action="pause"]').addEventListener("click", pauseCapture);
+    root.querySelector('[data-action="end"]').addEventListener("click", endCapture);
+    root.querySelector('[data-action="mini-end"]').addEventListener("click", endCapture);
+    root.querySelector('[data-action="minimize"]').addEventListener("click", () => setMinimized(true));
+    root.querySelector('[data-action="expand"]').addEventListener("click", () => setMinimized(false));
 
     return root;
+  }
+
+  function setMinimized(value) {
+    state.isMinimized = value;
+    window.localStorage.setItem(PANEL_MINIMIZED_KEY, String(value));
+    render();
+  }
+
+  function restorePanelPosition(root) {
+    try {
+      const position = JSON.parse(window.localStorage.getItem(PANEL_POSITION_KEY) || "null");
+      if (!position || typeof position.left !== "number" || typeof position.top !== "number") {
+        return;
+      }
+      const left = clamp(position.left, 8, window.innerWidth - 80);
+      const top = clamp(position.top, 8, window.innerHeight - 64);
+      root.style.left = `${left}px`;
+      root.style.top = `${top}px`;
+      root.style.right = "auto";
+      root.style.bottom = "auto";
+    } catch (_) {
+      window.localStorage.removeItem(PANEL_POSITION_KEY);
+    }
+  }
+
+  function setupPanelDragging(root) {
+    let dragState = null;
+
+    root.addEventListener("pointerdown", (event) => {
+      const handle = event.target.closest("[data-drag-handle]");
+      const interactive = event.target.closest("button,a,input,textarea,select");
+      if (!handle || interactive) {
+        return;
+      }
+
+      const rect = root.getBoundingClientRect();
+      dragState = {
+        pointerId: event.pointerId,
+        offsetX: event.clientX - rect.left,
+        offsetY: event.clientY - rect.top,
+      };
+      root.setPointerCapture(event.pointerId);
+      root.classList.add("is-dragging");
+      event.preventDefault();
+    });
+
+    root.addEventListener("pointermove", (event) => {
+      if (!dragState || event.pointerId !== dragState.pointerId) {
+        return;
+      }
+      const rect = root.getBoundingClientRect();
+      const left = clamp(event.clientX - dragState.offsetX, 8, window.innerWidth - rect.width - 8);
+      const top = clamp(event.clientY - dragState.offsetY, 8, window.innerHeight - rect.height - 8);
+      root.style.left = `${left}px`;
+      root.style.top = `${top}px`;
+      root.style.right = "auto";
+      root.style.bottom = "auto";
+    });
+
+    root.addEventListener("pointerup", (event) => {
+      if (!dragState || event.pointerId !== dragState.pointerId) {
+        return;
+      }
+      root.releasePointerCapture(event.pointerId);
+      root.classList.remove("is-dragging");
+      dragState = null;
+      const rect = root.getBoundingClientRect();
+      window.localStorage.setItem(PANEL_POSITION_KEY, JSON.stringify({ left: rect.left, top: rect.top }));
+    });
+
+    window.addEventListener("resize", () => restorePanelPosition(root));
   }
 
   async function startCapture() {
@@ -125,12 +222,12 @@
         state.captureStartedAt = state.captureStartedAt || Date.now();
         startObserver();
         persistActiveSession();
-        renderStatus("Resumed capture for the active MOM meeting.");
+        renderStatus("Resumed capture for the active iMann meeting.");
         render();
         return;
       }
 
-      renderStatus("Connecting to MOM backend...");
+      renderStatus("Connecting to iMann backend...");
       const meeting = await postJson("/api/live-meetings", {
         title: meetingTitle(),
         source: "google_meet",
@@ -157,7 +254,18 @@
     }
   }
 
-  async function stopCapture() {
+  function pauseCapture() {
+    if (!state.meetingId || !state.isCapturing) {
+      return;
+    }
+    stopObserver();
+    state.isCapturing = false;
+    persistActiveSession();
+    renderStatus("Paused. Click Resume to continue this transcription session.");
+    render();
+  }
+
+  async function endCapture() {
     if (!state.meetingId) {
       stopObserver();
       stopRetryTimer();
@@ -173,7 +281,12 @@
     state.isCapturing = false;
 
     try {
-      await flushPendingSegments();
+      renderStatus("Ending capture and saving queued updates...");
+      try {
+        await flushPendingSegments();
+      } catch (flushError) {
+        renderStatus(`${errorMessage(flushError)} Finalizing with the captions already saved.`);
+      }
       renderStatus("Finishing live meeting...");
       await postJson(`/api/live-meetings/${meetingId}/finish`, {});
       state.meetingId = null;
@@ -182,27 +295,13 @@
       state.previewSegments = [];
       stopRetryTimer();
       clearActiveSession();
-      renderStatus("Finished. Open MOM to generate notes.");
+      renderStatus("Finished. Open iMann to generate notes.");
     } catch (error) {
       persistActiveSession();
-      renderStatus(`${errorMessage(error)} Click Stop again after the backend is reachable.`);
+      renderStatus(`${errorMessage(error)} Click End again after the backend is reachable.`);
     } finally {
       render();
     }
-  }
-
-  async function sendTestSegment() {
-    if (!state.meetingId) {
-      renderStatus("Start capture before sending a test segment.");
-      return;
-    }
-
-    await sendSegment({
-      speaker: "MOM Test",
-      text: "This is a test live caption segment from the MOM extension.",
-      external_id: `mom-test-${Date.now()}`,
-      is_final: true,
-    });
   }
 
   function startObserver() {
@@ -473,6 +572,7 @@
   async function postJson(path, payload) {
     const response = await fetch(`${state.apiBase}${path}`, {
       method: "POST",
+      cache: "no-store",
       headers: {
         "Content-Type": "application/json",
       },
@@ -480,7 +580,7 @@
     });
 
     if (!response.ok) {
-      let detail = `MOM backend returned ${response.status}`;
+      let detail = `iMann backend returned ${response.status}`;
       try {
         const data = await response.json();
         detail = data.detail || detail;
@@ -494,9 +594,9 @@
   }
 
   async function getJson(path) {
-    const response = await fetch(`${state.apiBase}${path}`);
+    const response = await fetch(`${state.apiBase}${path}`, { cache: "no-store" });
     if (!response.ok) {
-      const error = new Error(`MOM backend returned ${response.status}`);
+      const error = new Error(`iMann backend returned ${response.status}`);
       error.status = response.status;
       throw error;
     }
@@ -554,7 +654,7 @@
       state.isCapturing = false;
       state.isConnected = false;
       persistActiveSession();
-      renderStatus("MOM backend is not reachable. Click Resume when it is back.");
+      renderStatus("iMann backend is not reachable. Click Resume when it is back.");
     }
 
     render();
@@ -581,7 +681,7 @@
         captureStartedAt: state.captureStartedAt,
         sentCount: state.sentCount,
         pendingSegments: state.pendingSegments.slice(-MAX_PENDING_SEGMENTS),
-        previewSegments: state.previewSegments.slice(-5),
+        previewSegments: state.previewSegments.slice(-MAX_PREVIEW_SEGMENTS),
       }),
     );
   }
@@ -637,11 +737,71 @@
     if (existingIndex >= 0) {
       state.previewSegments[existingIndex] = preview;
     } else {
-      state.previewSegments.push(preview);
+      const lastIndex = state.previewSegments.length - 1;
+      const last = state.previewSegments[lastIndex];
+      if (shouldMergePreview(last, preview)) {
+        state.previewSegments[lastIndex] = mergePreviewSegment(last, preview);
+      } else {
+        state.previewSegments.push(preview);
+      }
     }
-    state.previewSegments = state.previewSegments.slice(-5);
+    state.previewSegments = compactPreviewSegments(state.previewSegments).slice(-MAX_PREVIEW_SEGMENTS);
     persistActiveSession();
     render();
+  }
+
+  function previewSegmentsForDisplay() {
+    return compactPreviewSegments(state.previewSegments).slice(-MAX_RENDERED_PREVIEW_SEGMENTS);
+  }
+
+  function compactPreviewSegments(segments) {
+    const compacted = [];
+    for (const segment of segments) {
+      const text = normalizeText(segment.text);
+      if (!text) {
+        continue;
+      }
+      const preview = { ...segment, text };
+      const last = compacted[compacted.length - 1];
+      if (shouldMergePreview(last, preview)) {
+        compacted[compacted.length - 1] = mergePreviewSegment(last, preview);
+      } else {
+        compacted.push(preview);
+      }
+    }
+    return compacted;
+  }
+
+  function shouldMergePreview(previous, next) {
+    if (!previous || !next) {
+      return false;
+    }
+    if (normalizeSpeaker(previous.speaker) !== normalizeSpeaker(next.speaker)) {
+      return false;
+    }
+    const previousText = normalizeText(previous.text);
+    const nextText = normalizeText(next.text);
+    if (!previousText || !nextText) {
+      return false;
+    }
+    return captionsOverlap(previousText, nextText) || previousText.includes(nextText) || nextText.includes(previousText);
+  }
+
+  function mergePreviewSegment(previous, next) {
+    const previousText = normalizeText(previous.text);
+    const nextText = normalizeText(next.text);
+    const mergedText = mergeCaptionText(previousText, nextText);
+    return {
+      ...previous,
+      ...next,
+      speaker: next.speaker || previous.speaker,
+      start: Math.min(Number(previous.start) || 0, Number(next.start) || 0),
+      text: mergedText.length >= previousText.length ? mergedText : previousText,
+    };
+  }
+
+  function normalizeSpeaker(value) {
+    return normalizeText(value || "Speaker").toLowerCase();
   }
 
   function parseCaptionText(rawText) {
@@ -1180,38 +1340,54 @@
   }
 
   function render() {
+    ui.dataset.minimized = state.isMinimized ? "true" : "false";
+
     const statePill = ui.querySelector('[data-role="state"]');
     const count = ui.querySelector('[data-role="count"]');
     const start = ui.querySelector('[data-action="start"]');
-    const stop = ui.querySelector('[data-action="stop"]');
-    const test = ui.querySelector('[data-action="test"]');
+    const pause = ui.querySelector('[data-action="pause"]');
+    const end = ui.querySelector('[data-action="end"]');
     const apiInput = ui.querySelector("#mom-api-base");
     const transcript = ui.querySelector('[data-role="transcript"]');
     const timer = ui.querySelector('[data-role="timer"]');
     const recordDot = ui.querySelector('[data-role="record-dot"]');
+    const miniState = ui.querySelector('[data-role="mini-state"]');
+    const miniPreview = ui.querySelector('[data-role="mini-preview"]');
+    const miniTimer = ui.querySelector('[data-role="mini-timer"]');
+    const miniRecordDot = ui.querySelector('[data-role="mini-record-dot"]');
 
     const hasActiveMeeting = Boolean(state.meetingId);
-    statePill.textContent = state.isCapturing
+    const stateText = state.isCapturing
       ? `Live #${state.meetingId}`
       : hasActiveMeeting
         ? `Paused #${state.meetingId}`
         : "Idle";
+    const elapsed = state.captureStartedAt && hasActiveMeeting
+      ? formatTimer((Date.now() - state.captureStartedAt) / 1000)
+      : "00:00";
+
+    statePill.textContent = stateText;
     statePill.dataset.state = state.isCapturing ? "live" : hasActiveMeeting ? "paused" : "idle";
     count.textContent = `${state.sentCount} sent · ${state.pendingSegments.length} queued`;
     start.textContent = hasActiveMeeting && !state.isCapturing ? "Resume" : "Start";
     start.disabled = state.isCapturing;
-    stop.disabled = !hasActiveMeeting;
-    test.disabled = !state.isCapturing;
+    pause.disabled = !state.isCapturing;
+    end.disabled = !hasActiveMeeting;
     apiInput.disabled = hasActiveMeeting;
-    timer.textContent = state.captureStartedAt && hasActiveMeeting
-      ? formatTimer((Date.now() - state.captureStartedAt) / 1000)
-      : "00:00";
+    timer.textContent = elapsed;
     recordDot.dataset.state = state.isCapturing ? "live" : hasActiveMeeting ? "paused" : "idle";
+    miniState.textContent = stateText;
+    miniTimer.textContent = elapsed;
+    miniRecordDot.dataset.state = state.isCapturing ? "live" : hasActiveMeeting ? "paused" : "idle";
 
-    if (state.previewSegments.length === 0) {
+    const renderedPreviewSegments = previewSegmentsForDisplay();
+    if (renderedPreviewSegments.length === 0) {
       transcript.innerHTML = `<div class="mom-transcript-empty">Live captions will appear here.</div>`;
+      miniPreview.textContent = hasActiveMeeting ? `${state.sentCount} sent · ${state.pendingSegments.length} queued` : "iMann capture ready";
     } else {
-      transcript.innerHTML = state.previewSegments
+      const latest = renderedPreviewSegments[renderedPreviewSegments.length - 1];
+      miniPreview.textContent = latest.text || `${state.sentCount} sent · ${state.pendingSegments.length} queued`;
+      transcript.innerHTML = renderedPreviewSegments
         .map(
           (segment) => `
             <div class="mom-transcript-line">
@@ -1221,6 +1397,7 @@
           `,
         )
         .join("");
+      scrollTranscriptToBottom(transcript);
     }
   }
 
@@ -1228,11 +1405,22 @@
     ui.querySelector('[data-role="status"]').textContent = message;
   }
 
+  function scrollTranscriptToBottom(transcript) {
+    transcript.scrollTop = transcript.scrollHeight;
+    window.requestAnimationFrame(() => {
+      transcript.scrollTop = transcript.scrollHeight;
+    });
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(Math.max(value, min), Math.max(min, max));
+  }
+
   function errorMessage(error) {
     if (error instanceof TypeError) {
-      return `Could not reach MOM backend at ${state.apiBase}.`;
+      return `Could not reach iMann backend at ${state.apiBase}.`;
     }
-    return error instanceof Error ? error.message : "Unexpected MOM capture error.";
+    return error instanceof Error ? error.message : "Unexpected iMann capture error.";
   }
 
   function escapeHtml(value) {

@@ -42,6 +42,8 @@ def _ensure_sqlite_columns() -> None:
             connection.execute(text("ALTER TABLE meetings ADD COLUMN summary_seconds REAL"))
         if "summary_preset" not in columns:
             connection.execute(text("ALTER TABLE meetings ADD COLUMN summary_preset VARCHAR(64)"))
+        if "generated_notes" not in columns:
+            connection.execute(text("ALTER TABLE meetings ADD COLUMN generated_notes TEXT"))
         if "cleanup_status" not in columns:
             connection.execute(
                 text("ALTER TABLE meetings ADD COLUMN cleanup_status VARCHAR(32) DEFAULT 'not_started'")

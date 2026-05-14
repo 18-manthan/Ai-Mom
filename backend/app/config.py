@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     groq_base_url: str = "https://api.groq.com/openai/v1"
     summary_max_output_tokens: int = 700
     summary_timeout_seconds: float = 60.0
+    chat_max_output_tokens: int = 900
+    chat_timeout_seconds: float = 60.0
     cleanup_max_output_tokens: int = 4000
     cleanup_timeout_seconds: float = 90.0
 

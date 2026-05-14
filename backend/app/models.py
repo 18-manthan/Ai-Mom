@@ -19,6 +19,7 @@ class Meeting(Base):
     summary_status: Mapped[str] = mapped_column(String(32), default="not_started", index=True)
     summary_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     summary_preset: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    generated_notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     processing_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     summary_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     cleanup_status: Mapped[str] = mapped_column(String(32), default="not_started", index=True)

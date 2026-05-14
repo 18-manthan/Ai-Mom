@@ -2,6 +2,7 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
@@ -123,6 +124,9 @@ def process_cleanup(meeting_id: int) -> None:
         cleaned_segments = cleanup_segments(segments)
 
         payload["cleaned_segments"] = cleaned_segments
+        payload["summary"] = None
+        payload["summary_preset"] = None
+        payload["generated_notes"] = []
         transcript_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
         meeting.cleanup_seconds = round(time.perf_counter() - started_at, 2)
@@ -131,6 +135,7 @@ def process_cleanup(meeting_id: int) -> None:
         meeting.summary_status = "not_started"
         meeting.summary_error = None
         meeting.summary_seconds = None
+        meeting.generated_notes = None
         _set_cleanup_status(db, meeting, "completed")
     except Exception as exc:
         meeting = db.get(Meeting, meeting_id)
@@ -161,14 +166,38 @@ def process_summary(meeting_id: int, preset: str = "short") -> None:
 
         payload = json.loads(transcript_path.read_text(encoding="utf-8"))
         segments = payload.get("cleaned_segments") or payload.get("segments", [])
+        generated_notes = _load_generated_notes(meeting.generated_notes)
+        cached_note = _find_generated_note(generated_notes, preset)
+        if cached_note:
+            meeting.summary = cached_note.get("content")
+            meeting.summary_preset = preset
+            meeting.summary_seconds = cached_note.get("seconds")
+            payload["summary"] = cached_note.get("content")
+            payload["summary_preset"] = preset
+            payload["generated_notes"] = generated_notes
+            transcript_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            _set_summary_status(db, meeting, "completed")
+            return
+
         summary = generate_summary(segments, preset)
+        note = {
+            "id": uuid4().hex,
+            "preset": preset,
+            "title": _notes_title(preset),
+            "content": summary,
+            "created_at": datetime.utcnow().isoformat(),
+            "seconds": round(time.perf_counter() - started_at, 2),
+        }
+        generated_notes.insert(0, note)
 
         payload["summary"] = summary
         payload["summary_preset"] = preset
+        payload["generated_notes"] = generated_notes
         transcript_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
         meeting.summary = summary
         meeting.summary_preset = preset
+        meeting.generated_notes = json.dumps(generated_notes)
         meeting.summary_seconds = round(time.perf_counter() - started_at, 2)
         _set_summary_status(db, meeting, "completed")
     except Exception as exc:
@@ -178,3 +207,32 @@ def process_summary(meeting_id: int, preset: str = "short") -> None:
             _set_summary_status(db, meeting, "failed", str(exc))
     finally:
         db.close()
+
+
+def _load_generated_notes(raw_notes: str | None) -> list[dict]:
+    if not raw_notes:
+        return []
+    try:
+        notes = json.loads(raw_notes)
+    except json.JSONDecodeError:
+        return []
+    return notes if isinstance(notes, list) else []
+
+
+def _find_generated_note(notes: list[dict], preset: str) -> dict | None:
+    for note in notes:
+        if note.get("preset") == preset and note.get("content"):
+            return note
+    return None
+
+
+def _notes_title(preset: str) -> str:
+    titles = {
+        "short": "Short Summary",
+        "detailed": "Detailed Summary",
+        "citations": "Detailed Summary with Citations",
+        "actions": "Summary and Action Items",
+        "team_sync": "Team Sync - Project Updates",
+        "advice": "Smart AI Advice",
+    }
+    return titles.get(preset, "Meeting notes")
