@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 from pathlib import Path
 from uuid import uuid4
@@ -51,8 +52,11 @@ app.add_middleware(
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "https://meet.google.com",
+        "https://teams.microsoft.com",
+        "https://teams.cloud.microsoft",
+        "https://teams.live.com",
     ],
-    allow_origin_regex=r"chrome-extension://.*",
+    allow_origin_regex=r"(chrome-extension://.*|https://.*\.teams\.microsoft\.com|https://.*\.teams\.cloud\.microsoft|https://.*\.teams\.live\.com)",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -75,6 +79,7 @@ def _transcript_metadata(meeting: Meeting) -> dict:
         "started_at": None,
         "finished_at": None,
         "segment_count": 0,
+        "speakers": [],
     }
     if not meeting.transcript_path:
         return defaults
@@ -88,7 +93,18 @@ def _transcript_metadata(meeting: Meeting) -> dict:
     except (json.JSONDecodeError, OSError, ValueError):
         return defaults
 
-    segments = transcript.get("segments", [])
+    stored_speakers = transcript.get("speakers")
+    if isinstance(stored_speakers, list):
+        speakers = [
+            speaker
+            for speaker in (_clean_list_speaker(str(value)) for value in stored_speakers)
+            if speaker and not _is_bad_list_speaker(speaker)
+        ]
+    else:
+        speakers = []
+    segments = transcript.get("cleaned_segments") or transcript.get("segments", [])
+    if not speakers:
+        speakers = _extract_speakers_for_list(segments)
     return {
         "is_live": bool(transcript.get("live", False)),
         "source": transcript.get("source"),
@@ -97,6 +113,120 @@ def _transcript_metadata(meeting: Meeting) -> dict:
         "started_at": transcript.get("started_at"),
         "finished_at": transcript.get("finished_at"),
         "segment_count": len(segments) if isinstance(segments, list) else 0,
+        "speakers": speakers,
+    }
+
+
+def _extract_speakers_for_list(segments: object) -> list[str]:
+    if not isinstance(segments, list):
+        return []
+
+    speakers: list[str] = []
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        speaker = _clean_list_speaker(str(segment.get("speaker") or ""))
+        text = str(segment.get("text") or "")
+        if speaker in {"", "Speaker"}:
+            speaker = _speaker_from_caption_prefix(text) or speaker
+        if not speaker or _is_bad_list_speaker(speaker):
+            continue
+        if speaker not in speakers:
+            speakers.append(speaker)
+
+    if len(speakers) > 1:
+        speakers = [speaker for speaker in speakers if speaker != "Speaker"]
+    return speakers
+
+
+def _clean_list_speaker(value: str) -> str:
+    speaker = re.sub(r"\([^)]*\)", "", value)
+    speaker = re.sub(r"\b(?:meeting host|host|visitor|domain_disabled|domain disabled)\b", "", speaker, flags=re.IGNORECASE)
+    speaker = re.sub(r"[\s:,-]+$", "", speaker).strip()
+    if speaker.lower().startswith("language "):
+        return "Speaker"
+    if speaker and speaker == speaker.lower() and speaker not in {"you", "speaker"}:
+        speaker = " ".join(word[:1].upper() + word[1:] for word in speaker.split())
+    if speaker.lower() in {"you", "speaker"}:
+        speaker = speaker[:1].upper() + speaker[1:].lower()
+    return speaker or "Speaker"
+
+
+def _is_bad_list_speaker(value: str) -> bool:
+    lower = value.strip().lower()
+    return lower in {"", "participants", "language english", "english"} or bool(
+        re.fullmatch(r"[a-z]{3}-[a-z]{4}-[a-z]{3}", lower)
+    )
+
+
+def _speaker_from_caption_prefix(text: str) -> str:
+    cleaned = re.sub(r"\s+", " ", text).strip()
+    cleaned = re.sub(
+        r"^language\s+(?:english|hindi|spanish|french|german|portuguese|japanese|korean|chinese)\s+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
+    if not cleaned or "domain_disabled" in cleaned.lower() or " visitor" in cleaned.lower():
+        return ""
+
+    colon_match = re.match(r"^([A-Za-z][A-Za-z\s.'-]{1,60}):\s+\S+", cleaned)
+    if colon_match:
+        return _clean_list_speaker(colon_match.group(1))
+
+    words = cleaned.split()
+    for size in range(2, min(3, len(words) - 1) + 1):
+        prefix = words[:size]
+        remainder = words[size:]
+        if _looks_like_name_prefix(prefix) and _starts_like_caption_for_list(remainder):
+            return _clean_list_speaker(" ".join(prefix))
+    return ""
+
+
+def _looks_like_name_prefix(words: list[str]) -> bool:
+    if not 2 <= len(words) <= 3:
+        return False
+    normalized = [re.sub(r"[^A-Za-z]", "", word) for word in words]
+    normalized = [word for word in normalized if word]
+    if len(normalized) != len(words):
+        return False
+    first = normalized[0].lower()
+    if _is_common_caption_start_for_list(first):
+        return False
+    return all(2 <= len(word) <= 24 and not _is_common_caption_start_for_list(word.lower()) for word in normalized)
+
+
+def _starts_like_caption_for_list(words: list[str]) -> bool:
+    if not words:
+        return False
+    first = re.sub(r"[^A-Za-z]", "", words[0]).lower()
+    return bool(first) and _is_common_caption_start_for_list(first)
+
+
+def _is_common_caption_start_for_list(word: str) -> bool:
+    return word in {
+        "yeah",
+        "yes",
+        "no",
+        "okay",
+        "ok",
+        "so",
+        "and",
+        "but",
+        "in",
+        "the",
+        "from",
+        "here",
+        "heres",
+        "hey",
+        "hi",
+        "thanks",
+        "we",
+        "i",
+        "im",
+        "you",
+        "it",
+        "is",
     }
 
 

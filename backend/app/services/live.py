@@ -51,6 +51,7 @@ def start_live_meeting(
         "language": None,
         "language_probability": None,
         "summary": None,
+        "speakers": [],
         "segments": [],
     }
 
@@ -127,7 +128,9 @@ def finish_live_meeting(db: Session, meeting: Meeting) -> Meeting:
     transcript_path = Path(meeting.transcript_path)
     with _path_lock(transcript_path):
         payload = _read_payload(transcript_path, meeting)
-        payload["segments"] = compact_live_segments(payload.get("segments", []))
+        compacted_segments = compact_live_segments(payload.get("segments", []))
+        payload["segments"] = compacted_segments
+        payload["speakers"] = _distinct_speakers(compacted_segments)
         payload["finished_at"] = finished_at.isoformat()
         payload["updated_at"] = finished_at.isoformat()
         _write_payload(transcript_path, payload)
@@ -162,6 +165,7 @@ def _read_payload(path: Path, meeting: Meeting) -> dict[str, Any]:
         "language": None,
         "language_probability": None,
         "summary": meeting.summary,
+        "speakers": [],
         "segments": [],
     }
 
@@ -175,11 +179,19 @@ def compact_live_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]
             continue
 
         speaker = str(segment.get("speaker") or "Speaker").strip() or "Speaker"
+        if speaker.lower().startswith("language "):
+            speaker = "Speaker"
         if str(segment.get("text") or "").strip().lower().startswith("you "):
             speaker = "You"
         label_split = _split_leading_participant_label(text) if speaker != "You" else None
         if label_split:
             speaker, text = label_split
+            text = _strip_repeated_speaker_prefixes(text, speaker)
+        if speaker == "Speaker":
+            teams_split = _split_repeated_teams_speaker(text)
+            if teams_split:
+                speaker, text = teams_split
+        speaker = _display_speaker_name(speaker)
 
         normalized = {
             **segment,
@@ -193,12 +205,15 @@ def compact_live_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]
 
         absorbed = False
         for previous in reversed(compacted[-20:]):
-            if _is_caption_update(str(previous.get("text") or ""), text):
+            previous_speaker = str(previous.get("speaker") or "Speaker").strip() or "Speaker"
+            if _can_merge_speaker_updates(previous_speaker, speaker) and _is_caption_update(str(previous.get("text") or ""), text):
                 previous_text = str(previous.get("text") or "")
                 merged_text = _merge_caption_text(previous_text, text)
                 previous_start = previous.get("start", normalized.get("start", 0))
                 previous_end = previous.get("end", previous.get("start", 0))
                 previous.update(normalized)
+                if speaker == "Speaker" and previous_speaker != "Speaker":
+                    previous["speaker"] = previous_speaker
                 previous["text"] = merged_text
                 previous["start"] = min(float(previous_start), float(normalized.get("start", 0)))
                 previous["end"] = max(float(previous_end or 0), float(normalized.get("end", 0) or 0))
@@ -212,8 +227,46 @@ def compact_live_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]
     return _drop_recent_duplicate_echoes(compacted)
 
 
+def _distinct_speakers(segments: list[dict[str, Any]]) -> list[str]:
+    speakers: list[str] = []
+    has_generic_speaker = False
+    for segment in segments:
+        speaker = _display_speaker_name(str(segment.get("speaker") or "").strip())
+        if speaker == "Speaker":
+            has_generic_speaker = True
+            continue
+        if not speaker or speaker.lower() in {"participants", "language english"}:
+            continue
+        if speaker not in speakers:
+            speakers.append(speaker)
+    if speakers:
+        return speakers
+    return ["Speaker"] if has_generic_speaker else []
+
+
+def _can_merge_speaker_updates(previous: str, current: str) -> bool:
+    previous_clean = previous.strip().lower() or "speaker"
+    current_clean = current.strip().lower() or "speaker"
+    return previous_clean == current_clean or "speaker" in {previous_clean, current_clean}
+
+
+def _display_speaker_name(value: str) -> str:
+    speaker = str(value or "").strip()
+    if speaker.lower() in {"you", "speaker"}:
+        return speaker[:1].upper() + speaker[1:].lower()
+    if speaker and speaker == speaker.lower():
+        return " ".join(word[:1].upper() + word[1:] for word in speaker.split())
+    return speaker
+
+
 def _clean_caption_text(text: str) -> str:
     cleaned = re.sub(r"\s+", " ", text).strip()
+    cleaned = re.sub(
+        r"^language\s+(?:english|hindi|spanish|french|german|portuguese|japanese|korean|chinese)\s+",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     cleaned = re.sub(r"^(?:you|speaker)\s+", "", cleaned, flags=re.IGNORECASE)
     return cleaned.strip()
 
@@ -228,11 +281,22 @@ def _is_rejected_caption(text: str, speaker: str) -> bool:
     if (
         lower == "you"
         or _is_ui_noise_text(text)
+        or lower.startswith("participants ")
+        or "domain_disabled" in lower
+        or " visitor" in lower
         or lower.startswith("joined as ")
         or lower.startswith("language ")
         or "meeting host" in lower
         or lower == "live captions have been turned off"
         or lower.startswith("turn off microphone")
+        or lower == "turn on rtt for this call"
+        or lower == "get the mobile app"
+        or lower.startswith("editor spellcheck")
+        or lower.startswith("use enter or spacebar")
+        or lower.startswith("restart teams")
+        or "microsoft 365" in lower
+        or "already have a subscription" in lower
+        or "for each meeting and call" in lower
         or "or share this joining info with others you want in the meeting" in lower
         or "end the call or just leave" in lower
         or "just leave the call" in lower
@@ -272,6 +336,35 @@ def _is_ui_noise_text(text: str) -> bool:
     if 1 <= len(words) <= 3 and _looks_like_participant_label(words):
         return True
     return False
+
+
+def _split_repeated_teams_speaker(text: str) -> tuple[str, str] | None:
+    cleaned = _clean_caption_text(text)
+    words = cleaned.split()
+    for size in range(min(4, len(words) - 1), 1, -1):
+        prefix = words[:size]
+        if any(_is_common_caption_start(re.sub(r"[^A-Za-z]", "", word).lower()) for word in prefix):
+            continue
+        if not _looks_like_participant_label(prefix):
+            continue
+        speaker = re.sub(r"[\s:,-]+$", "", " ".join(prefix)).strip()
+        pattern = re.compile(rf"(?:^|(?<=[.!?]\s))({re.escape(speaker)})\s+", re.IGNORECASE)
+        matches = list(pattern.finditer(cleaned))
+        if len(matches) < 2:
+            continue
+        stripped = _strip_repeated_speaker_prefixes(cleaned, speaker)
+        if stripped:
+            return speaker, stripped
+    return None
+
+
+def _strip_repeated_speaker_prefixes(text: str, speaker: str) -> str:
+    speaker = re.sub(r"[\s:,-]+$", "", speaker).strip()
+    if not speaker:
+        return text
+    pattern = re.compile(rf"(?:^|(?<=[.!?]\s))({re.escape(speaker)})\s+", re.IGNORECASE)
+    stripped = pattern.sub("", text)
+    return re.sub(r"\s+", " ", stripped).strip()
 
 
 def _is_caption_update(previous: str, current: str) -> bool:
@@ -407,14 +500,18 @@ def _looks_like_name_only(text: str) -> bool:
         "from",
         "here",
         "heres",
+        "hello",
         "hey",
         "hi",
+        "good",
         "thanks",
         "we",
         "i",
         "you",
         "it",
         "is",
+        "now",
+        "please",
     }
     if any(word.lower() in common_caption_words for word in words):
         return False
@@ -432,8 +529,9 @@ def _split_leading_participant_label(text: str) -> tuple[str, str] | None:
     for size in range(2, min(4, len(words) - 1) + 1):
         prefix = words[:size]
         remainder = words[size:]
-        if _looks_like_participant_label(prefix) and _starts_like_caption(remainder):
-            return " ".join(prefix).strip(), " ".join(remainder).strip()
+        if (_looks_like_participant_label(prefix) or _looks_like_lowercase_participant_prefix(prefix, remainder)) and _starts_like_caption(remainder):
+            speaker = re.sub(r"[\s:,-]+$", "", " ".join(prefix)).strip()
+            return speaker, " ".join(remainder).strip()
     return None
 
 
@@ -459,14 +557,18 @@ def _looks_like_participant_label(words: list[str]) -> bool:
         "from",
         "here",
         "heres",
+        "hello",
         "hey",
         "hi",
+        "good",
         "thanks",
         "we",
         "i",
         "you",
         "it",
         "is",
+        "now",
+        "please",
     }
     if normalized[0].lower() in common_caption_starts:
         return False
@@ -478,12 +580,32 @@ def _looks_like_participant_label(words: list[str]) -> bool:
     return short_or_name_like == len(normalized)
 
 
+def _looks_like_lowercase_participant_prefix(prefix: list[str], remainder: list[str]) -> bool:
+    if not 2 <= len(prefix) <= 3 or not _starts_like_caption(remainder):
+        return False
+    normalized = [re.sub(r"[^A-Za-z]", "", word) for word in prefix]
+    normalized = [word for word in normalized if word]
+    if len(normalized) != len(prefix):
+        return False
+    first = normalized[0].lower()
+    if _is_common_caption_start(first):
+        return False
+    return all(
+        word == word.lower() and 2 <= len(word) <= 24 and not _is_common_caption_start(word.lower())
+        for word in normalized
+    )
+
+
 def _starts_like_caption(words: list[str]) -> bool:
     if not words:
         return False
     first = re.sub(r"[^A-Za-z]", "", words[0]).lower()
     if not first:
         return False
+    return _is_common_caption_start(first)
+
+
+def _is_common_caption_start(word: str) -> bool:
     common_starts = {
         "yeah",
         "yes",
@@ -498,8 +620,10 @@ def _starts_like_caption(words: list[str]) -> bool:
         "from",
         "here",
         "heres",
+        "hello",
         "hey",
         "hi",
+        "good",
         "thanks",
         "we",
         "i",
@@ -508,8 +632,10 @@ def _starts_like_caption(words: list[str]) -> bool:
         "you",
         "it",
         "is",
+        "now",
+        "please",
     }
-    return first in common_starts
+    return word in common_starts
 
 
 def _words_for_label_detection(text: str) -> list[str]:

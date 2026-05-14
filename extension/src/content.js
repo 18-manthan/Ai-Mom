@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const SCRIPT_VERSION = "0.1.14";
+  const SCRIPT_VERSION = "0.1.17";
 
   if (window.__MOM_LIVE_CAPTURE_LOADED__ && window.__MOM_LIVE_CAPTURE_VERSION__ === SCRIPT_VERSION) {
     return;
@@ -30,14 +30,17 @@
 
   const state = {
     apiBase: window.localStorage.getItem("mom.apiBase") || DEFAULT_API_BASE,
+    platform: detectPlatform(),
     captureStartedAt: 0,
     isCapturing: false,
     isConnected: false,
+    isEnding: false,
     meetingId: null,
     meetingCode: meetingCode(),
     observer: null,
     scanTimer: null,
     retryTimer: null,
+    segmentControllers: new Set(),
     nodeIds: new WeakMap(),
     nextNodeId: 1,
     activeCaptions: new Map(),
@@ -47,6 +50,7 @@
     lastCandidateAt: 0,
     lastRecoveryAt: 0,
     nodeSnapshots: new WeakMap(),
+    nodeSpeakers: new WeakMap(),
     isMinimized: window.localStorage.getItem(PANEL_MINIMIZED_KEY) === "true",
   };
 
@@ -66,7 +70,7 @@
         <div class="mom-head" data-drag-handle="true">
           <div class="mom-title">
             <strong>iMann</strong>
-            <span>Google Meet captions</span>
+            <span>${platformLabel()} captions</span>
           </div>
           <div class="mom-state-cluster">
             <span class="mom-status-dot" data-role="record-dot"></span>
@@ -87,7 +91,7 @@
           <div class="mom-transcript" data-role="transcript">
             <div class="mom-transcript-empty">
               <strong>Live captions will appear here.</strong>
-              <span>Turn on Google Meet captions and press Start.</span>
+              <span>Turn on ${platformLabel()} captions and press Start.</span>
             </div>
           </div>
         </div>
@@ -212,13 +216,14 @@
   }
 
   async function startCapture() {
-    if (state.isCapturing) {
+    if (state.isCapturing || state.isEnding) {
       return;
     }
 
     try {
       if (state.meetingId) {
         state.isCapturing = true;
+        state.isEnding = false;
         state.captureStartedAt = state.captureStartedAt || Date.now();
         startObserver();
         persistActiveSession();
@@ -230,7 +235,7 @@
       renderStatus("Connecting to iMann backend...");
       const meeting = await postJson("/api/live-meetings", {
         title: meetingTitle(),
-        source: "google_meet",
+        source: platformSource(),
         meeting_code: state.meetingCode,
         source_url: window.location.href,
       });
@@ -238,6 +243,7 @@
       state.meetingId = meeting.id;
       state.captureStartedAt = Date.now();
       state.isCapturing = true;
+      state.isEnding = false;
       state.sentCount = 0;
       state.activeCaptions.clear();
       state.pendingSegments = [];
@@ -246,7 +252,7 @@
 
       startObserver();
       persistActiveSession();
-      renderStatus("Capturing. Keep Google Meet captions turned on.");
+      renderStatus(`Capturing. Keep ${platformLabel()} captions turned on.`);
       render();
     } catch (error) {
       renderStatus(errorMessage(error));
@@ -266,19 +272,32 @@
   }
 
   async function endCapture() {
+    if (state.isEnding) {
+      renderStatus("Ending is already in progress...");
+      render();
+      return;
+    }
+
     if (!state.meetingId) {
       stopObserver();
       stopRetryTimer();
+      abortSegmentRequests();
       state.isCapturing = false;
       state.isConnected = false;
+      state.isEnding = false;
       clearActiveSession();
       render();
       return;
     }
 
     const meetingId = state.meetingId;
+    state.isEnding = true;
     stopObserver();
+    stopRetryTimer();
+    state.pendingScan = false;
     state.isCapturing = false;
+    renderStatus("Ending capture...");
+    render();
 
     try {
       renderStatus("Ending capture and saving queued updates...");
@@ -291,12 +310,13 @@
       await postJson(`/api/live-meetings/${meetingId}/finish`, {});
       state.meetingId = null;
       state.isConnected = false;
+      state.isEnding = false;
       state.pendingSegments = [];
       state.previewSegments = [];
-      stopRetryTimer();
       clearActiveSession();
       renderStatus("Finished. Open iMann to generate notes.");
     } catch (error) {
+      state.isEnding = false;
       persistActiveSession();
       renderStatus(`${errorMessage(error)} Click End again after the backend is reachable.`);
     } finally {
@@ -371,7 +391,7 @@
       return;
     }
     if (candidates.length === 0 && missingForMs > NO_CAPTION_WARNING_MS) {
-      renderStatus("Reconnecting to Google Meet captions...");
+      renderStatus(`Reconnecting to ${platformLabel()} captions...`);
       render();
     }
     for (const candidate of candidates) {
@@ -418,7 +438,7 @@
         continue;
       }
 
-      const parsed = parseCaptionText(rawText);
+      const parsed = parseCaptionText(rawText, node);
       if (!parsed || isRejectedCaption(parsed)) {
         continue;
       }
@@ -472,7 +492,7 @@
       if (!looksLikeBottomCaptionText(text, rect)) {
         continue;
       }
-      const parsed = parseCaptionText(text);
+      const parsed = parseCaptionText(text, parent);
       if (!parsed || isRejectedCaption(parsed)) {
         continue;
       }
@@ -498,15 +518,16 @@
       return;
     }
 
-    const captionKey = candidate.speaker || "Speaker";
+    const speaker = resolveCandidateSpeaker(candidate);
+    const captionKey = speaker === "Speaker" ? `Speaker:${getNodeId(candidate.node)}` : speaker;
     const active = state.activeCaptions.get(captionKey);
     const isSameCaption = active && captionsOverlap(active.text, text);
 
     if (!isSameCaption) {
       state.activeCaptions.set(captionKey, {
-        speaker: candidate.speaker,
+        speaker,
         text,
-        externalId: `meet-caption-${Date.now()}-${hashText(`${candidate.speaker}:${text}`)}`,
+        externalId: `meet-caption-${Date.now()}-${hashText(`${captionKey}:${text}`)}`,
         start: elapsed,
         lastSentText: "",
       });
@@ -514,8 +535,8 @@
 
     const current = state.activeCaptions.get(captionKey);
     current.text = mergeCaptionText(current.text, text);
-    if (current.speaker === "Speaker" && candidate.speaker !== "Speaker") {
-      current.speaker = candidate.speaker;
+    if (current.speaker === "Speaker" && speaker !== "Speaker") {
+      current.speaker = speaker;
     }
 
     if (current.text === current.lastSentText) {
@@ -536,43 +557,61 @@
   }
 
   async function sendSegment(segment) {
-    if (!state.meetingId) {
+    if (!state.meetingId || state.isEnding) {
       return;
     }
 
     const elapsed = Math.max(0, (Date.now() - state.captureStartedAt) / 1000);
     const payload = {
-      speaker: segment.speaker || "Speaker",
+      speaker: normalizeSpeakerName(segment.speaker) || "Speaker",
       text: segment.text,
       start: segment.start ?? elapsed,
       end: segment.end ?? elapsed,
       external_id: segment.external_id,
-      source: "google_meet",
+      source: platformSource(),
       is_final: segment.is_final !== false,
     };
 
     rememberPreviewSegment(payload);
 
+    const controller = new AbortController();
+    state.segmentControllers.add(controller);
     try {
-      await postJson(`/api/live-meetings/${state.meetingId}/segments`, payload);
+      await postJson(`/api/live-meetings/${state.meetingId}/segments`, payload, { signal: controller.signal });
+      if (state.isEnding || !state.meetingId) {
+        return;
+      }
       state.sentCount += 1;
       state.isConnected = true;
       persistActiveSession();
       renderStatus(state.pendingSegments.length ? "Capturing captions. Retrying queued updates..." : "Capturing captions...");
       render();
     } catch (error) {
+      if (error?.name === "AbortError" || state.isEnding || !state.meetingId) {
+        return;
+      }
       state.isConnected = false;
       queuePendingSegment(payload);
       renderStatus(`${errorMessage(error)} Queued ${state.pendingSegments.length} update${state.pendingSegments.length === 1 ? "" : "s"}.`);
       render();
       throw error;
+    } finally {
+      state.segmentControllers.delete(controller);
     }
   }
 
-  async function postJson(path, payload) {
+  function abortSegmentRequests() {
+    for (const controller of state.segmentControllers) {
+      controller.abort();
+    }
+    state.segmentControllers.clear();
+  }
+
+  async function postJson(path, payload, options = {}) {
     const response = await fetch(`${state.apiBase}${path}`, {
       method: "POST",
       cache: "no-store",
+      signal: options.signal,
       headers: {
         "Content-Type": "application/json",
       },
@@ -608,6 +647,9 @@
     if (!session?.meetingId) {
       return;
     }
+    if (session.platform && session.platform !== state.platform) {
+      return;
+    }
     if (session.meetingCode && state.meetingCode && session.meetingCode !== state.meetingCode) {
       return;
     }
@@ -631,12 +673,14 @@
         state.previewSegments = [];
         state.isCapturing = false;
         state.isConnected = false;
+        state.isEnding = false;
         renderStatus("Previous MOM live session is already finished.");
         render();
         return;
       }
       state.isCapturing = true;
       state.isConnected = true;
+      state.isEnding = false;
       startObserver();
       renderStatus("Reconnected to the active MOM live meeting.");
     } catch (error) {
@@ -647,12 +691,14 @@
         state.previewSegments = [];
         state.isCapturing = false;
         state.isConnected = false;
+        state.isEnding = false;
         renderStatus("Previous MOM live session was not found. Start a new capture.");
         render();
         return;
       }
       state.isCapturing = false;
       state.isConnected = false;
+      state.isEnding = false;
       persistActiveSession();
       renderStatus("iMann backend is not reachable. Click Resume when it is back.");
     }
@@ -676,6 +722,7 @@
       ACTIVE_SESSION_KEY,
       JSON.stringify({
         meetingId: state.meetingId,
+        platform: state.platform,
         meetingCode: state.meetingCode,
         apiBase: state.apiBase,
         captureStartedAt: state.captureStartedAt,
@@ -794,7 +841,7 @@
     return {
       ...previous,
       ...next,
-      speaker: next.speaker || previous.speaker,
+      speaker: next.speaker && next.speaker !== "Speaker" ? next.speaker : previous.speaker,
       start: Math.min(Number(previous.start) || 0, Number(next.start) || 0),
       text: mergedText.length >= previousText.length ? mergedText : previousText,
     };
@@ -804,7 +851,7 @@
     return normalizeText(value || "Speaker").toLowerCase();
   }
 
-  function parseCaptionText(rawText) {
+  function parseCaptionText(rawText, node = null) {
     const sourceText = normalizeText(rawText).slice(-CAPTION_TEXT_WINDOW);
     const lines = sourceText
       .split("\n")
@@ -812,16 +859,30 @@
       .filter(Boolean);
 
     if (lines.length >= 2 && looksLikeSpeaker(lines[0])) {
+      const explicitSpeaker = normalizeSpeakerName(lines[0]);
+      if (!explicitSpeaker) {
+        return {
+          speaker: "Speaker",
+          text: cleanCaptionText(lines.slice(1).join(" ")),
+        };
+      }
       return {
-        speaker: lines[0],
+        speaker: explicitSpeaker,
         text: cleanCaptionText(lines.slice(1).join(" ")),
       };
     }
 
     const colonMatch = sourceText.match(/^([^:]{2,60}):\s+(.+)$/);
     if (colonMatch && looksLikeSpeaker(colonMatch[1])) {
+      const explicitSpeaker = normalizeSpeakerName(colonMatch[1]);
+      if (!explicitSpeaker) {
+        return {
+          speaker: "Speaker",
+          text: cleanCaptionText(colonMatch[2]),
+        };
+      }
       return {
-        speaker: normalizeText(colonMatch[1]),
+        speaker: explicitSpeaker,
         text: cleanCaptionText(colonMatch[2]),
       };
     }
@@ -836,8 +897,9 @@
 
     const speakerPrefix = splitLeadingParticipantLabel(sourceText);
     if (speakerPrefix) {
+      const explicitSpeaker = normalizeSpeakerName(speakerPrefix.speaker);
       return {
-        speaker: speakerPrefix.speaker,
+        speaker: explicitSpeaker || "Speaker",
         text: cleanCaptionText(speakerPrefix.text),
       };
     }
@@ -846,6 +908,231 @@
       speaker: "Speaker",
       text: cleanCaptionText(sourceText),
     };
+  }
+
+  function extractSpeakerFromCaptionNode(node, captionText) {
+    if (!node) {
+      return "";
+    }
+
+    const containers = [];
+    let current = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+    for (let depth = 0; current && depth < 5; depth += 1) {
+      containers.push(current);
+      current = current.parentElement;
+    }
+
+    for (const container of containers) {
+      const attributeSpeaker = speakerFromAttributes(container, captionText);
+      if (attributeSpeaker) {
+        return attributeSpeaker;
+      }
+    }
+
+    for (const container of containers) {
+      const childSpeaker = speakerFromChildLabels(container, captionText);
+      if (childSpeaker) {
+        return childSpeaker;
+      }
+    }
+
+    return "";
+  }
+
+  function speakerFromAttributes(node, captionText) {
+    const attributes = [
+      "aria-label",
+      "title",
+      "data-sender-name",
+      "data-participant-name",
+      "data-display-name",
+      "data-name",
+    ];
+    for (const attribute of attributes) {
+      const value = normalizeText(node.getAttribute?.(attribute) || "");
+      const speaker = speakerFromMixedLabel(value, captionText);
+      if (speaker) {
+        return speaker;
+      }
+    }
+    return "";
+  }
+
+  function speakerFromChildLabels(container, captionText) {
+    const children = Array.from(container.querySelectorAll("span,div")).slice(0, 24);
+    const captionLower = cleanCaptionText(captionText).toLowerCase();
+    for (const child of children) {
+      if (!isVisible(child)) {
+        continue;
+      }
+      const text = normalizeText(child.innerText || child.textContent || "");
+      const textLower = text.toLowerCase();
+      if (
+        !text ||
+        text.length > 80 ||
+        captionLower.includes(textLower) ||
+        (captionLower.length >= 3 && textLower.includes(captionLower))
+      ) {
+        continue;
+      }
+      const speaker = normalizeSpeakerName(text);
+      if (speaker) {
+        return speaker;
+      }
+    }
+    return "";
+  }
+
+  function speakerFromMixedLabel(value, captionText) {
+    if (!value) {
+      return "";
+    }
+    const cleanedCaption = cleanCaptionText(captionText).toLowerCase();
+    const parts = value
+      .split(/[,|•·\n]/)
+      .map((part) => normalizeText(part))
+      .filter(Boolean);
+    for (const part of [value, ...parts]) {
+      const cleaned = cleanCaptionText(part);
+      if (!cleaned || cleanedCaption.includes(cleaned.toLowerCase())) {
+        continue;
+      }
+      const withoutStatus = cleaned
+        .replace(/\b(is speaking|speaking|presenting|muted|camera is off|meeting host)\b/gi, "")
+        .replace(/\([^)]*\)/g, "")
+        .trim();
+      const speaker = normalizeSpeakerName(withoutStatus);
+      if (speaker) {
+        return speaker;
+      }
+    }
+    return "";
+  }
+
+  function resolveCandidateSpeaker(candidate) {
+    const speaker = normalizeSpeakerName(candidate.speaker);
+    if (speaker && speaker !== "Speaker") {
+      return speaker;
+    }
+    return "Speaker";
+  }
+
+  function normalizeSpeakerName(value) {
+    const cleaned = normalizeText(value)
+      .replace(/\([^)]*\)/g, "")
+      .replace(/\b(you are presenting|your presentation|presentation|meeting host|host)\b/gi, "")
+      .replace(/\b(is speaking|speaking|muted|camera is off)\b/gi, "")
+      .trim();
+    if (!cleaned || cleaned.length > 60) {
+      return "";
+    }
+    const words = cleaned.split(/\s+/).filter(Boolean);
+    if (words.length > 4) {
+      return "";
+    }
+    const lower = cleaned.toLowerCase();
+    if (lower === "speaker") {
+      return "Speaker";
+    }
+    if (isBadSpeakerLabel(cleaned)) {
+      return "";
+    }
+    if (looksLikeCaptionSpeakerFalsePositive(words)) {
+      return "";
+    }
+    if (!looksLikeSpeaker(cleaned)) {
+      return "";
+    }
+    return cleaned;
+  }
+
+  function looksLikeCaptionSpeakerFalsePositive(words) {
+    const first = (words[0] || "").toLowerCase().replace(/[^a-z]/g, "");
+    const second = (words[1] || "").toLowerCase().replace(/[^a-z]/g, "");
+    const sentenceStarts = new Set([
+      "a",
+      "an",
+      "as",
+      "and",
+      "are",
+      "but",
+      "can",
+      "could",
+      "do",
+      "does",
+      "for",
+      "from",
+      "good",
+      "here",
+      "how",
+      "if",
+      "in",
+      "is",
+      "it",
+      "its",
+      "let",
+      "lets",
+      "now",
+      "okay",
+      "ok",
+      "outside",
+      "right",
+      "so",
+      "that",
+      "thats",
+      "the",
+      "there",
+      "this",
+      "to",
+      "what",
+      "when",
+      "where",
+      "why",
+      "we",
+      "you",
+    ]);
+    if (first === "you") {
+      return false;
+    }
+    if (sentenceStarts.has(first)) {
+      return true;
+    }
+    return first === "it" && second === "s";
+  }
+
+  function isBadSpeakerLabel(value) {
+    const lower = normalizeText(value).toLowerCase();
+    const badLabels = new Set([
+      "captions",
+      "live transcript",
+      "google meet captions",
+      "live captions",
+      "meeting details",
+      "present now",
+      "raise hand",
+      "more options",
+      "activities",
+      "host controls",
+      "english",
+      "hindi",
+      "spanish",
+      "french",
+      "german",
+      "portuguese",
+      "japanese",
+      "korean",
+      "chinese",
+    ]);
+    if (badLabels.has(lower)) {
+      return true;
+    }
+    if (lower.startsWith("language ")) {
+      return true;
+    }
+    if (state.meetingCode && lower === state.meetingCode) {
+      return true;
+    }
+    return /^[a-z]{3}-[a-z]{4}-[a-z]{3}$/i.test(value);
   }
 
   function looksLikeCaptionBlock(text, rect, node) {
@@ -1021,8 +1308,8 @@
   }
 
   function captionsOverlap(previous, next) {
-    const a = cleanCaptionText(previous).toLowerCase();
-    const b = cleanCaptionText(next).toLowerCase();
+    const a = captionCompareKey(previous);
+    const b = captionCompareKey(next);
     if (!a || !b) {
       return false;
     }
@@ -1051,13 +1338,15 @@
   function mergeCaptionText(previous, next) {
     const a = cleanCaptionText(previous);
     const b = cleanCaptionText(next);
+    const aKey = captionCompareKey(a);
+    const bKey = captionCompareKey(b);
     if (!a) return b;
     if (!b) return a;
     if (a === b) return a;
-    if (b.startsWith(a)) return b;
-    if (a.startsWith(b)) return a;
-    if (a.length >= 24 && b.includes(a)) return b;
-    if (b.length >= 24 && a.includes(b)) return a;
+    if (bKey.startsWith(aKey)) return b;
+    if (aKey.startsWith(bKey)) return a;
+    if (aKey.length >= 24 && bKey.includes(aKey)) return b;
+    if (bKey.length >= 24 && aKey.includes(bKey)) return a;
 
     const aWords = a.split(" ");
     const bWords = b.split(" ");
@@ -1072,6 +1361,14 @@
     }
 
     return b.length >= a.length ? b : a;
+  }
+
+  function captionCompareKey(value) {
+    return cleanCaptionText(value)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   function isVisible(node) {
@@ -1096,6 +1393,9 @@
     if (
       lower === "you" ||
       isUiNoiseText(text) ||
+      lower.startsWith("participants ") ||
+      lower.includes("domain_disabled") ||
+      lower.includes(" visitor") ||
       lower.startsWith("joined as ") ||
       lower.startsWith("language ") ||
       lower.includes("meeting host") ||
@@ -1143,6 +1443,8 @@
       "show everyone",
       "activities",
       "host controls",
+      "participants",
+      "domain_disabled",
     ];
     return rejected.some((item) => lower.includes(item));
   }
@@ -1166,6 +1468,7 @@
 
   function cleanCaptionText(value) {
     return normalizeText(value)
+      .replace(/^language\s+(?:english|hindi|spanish|french|german|portuguese|japanese|korean|chinese)\s+/i, "")
       .replace(/^You\s+/i, "")
       .replace(/^Speaker\s+/i, "")
       .trim();
@@ -1190,9 +1493,12 @@
     for (let size = 2; size <= Math.min(4, words.length - 1); size += 1) {
       const prefix = words.slice(0, size);
       const remainder = words.slice(size);
-      if (looksLikeParticipantLabel(prefix) && startsLikeCaption(remainder)) {
+      if (
+        (looksLikeParticipantLabel(prefix) || looksLikeLowercaseParticipantPrefix(prefix, remainder)) &&
+        startsLikeCaption(remainder)
+      ) {
         return {
-          speaker: prefix.join(" "),
+          speaker: prefix.join(" ").replace(/[\s:,-]+$/, ""),
           text: remainder.join(" "),
         };
       }
@@ -1227,6 +1533,11 @@
       "you",
       "it",
       "is",
+      "its",
+      "itself",
+      "thats",
+      "lets",
+      "let",
     ]);
     if (words.some((word) => commonCaptionWords.has(word.toLowerCase()))) {
       return false;
@@ -1266,6 +1577,11 @@
       "you",
       "it",
       "is",
+      "its",
+      "itself",
+      "thats",
+      "lets",
+      "let",
     ]);
     if (commonCaptionStarts.has(normalized[0].toLowerCase())) {
       return false;
@@ -1274,11 +1590,33 @@
     return normalized.every((word) => word.length <= 3 || /^[A-Z]/.test(word));
   }
 
+  function looksLikeLowercaseParticipantPrefix(prefix, remainder) {
+    if (prefix.length < 2 || prefix.length > 3 || !startsLikeCaption(remainder)) {
+      return false;
+    }
+    const normalized = prefix.map((word) => word.replace(/[^A-Za-z]/g, "")).filter(Boolean);
+    if (normalized.length !== prefix.length) {
+      return false;
+    }
+    const first = normalized[0].toLowerCase();
+    if (isCommonCaptionStart(first)) {
+      return false;
+    }
+    return normalized.every((word) => {
+      const lower = word.toLowerCase();
+      return word === lower && word.length >= 2 && word.length <= 24 && !isCommonCaptionStart(lower);
+    });
+  }
+
   function startsLikeCaption(words) {
     if (!words.length) {
       return false;
     }
     const first = words[0].replace(/[^A-Za-z]/g, "").toLowerCase();
+    return isCommonCaptionStart(first);
+  }
+
+  function isCommonCaptionStart(word) {
     const commonStarts = new Set([
       "yeah",
       "yes",
@@ -1302,8 +1640,10 @@
       "you",
       "it",
       "is",
+      "now",
+      "please",
     ]);
-    return commonStarts.has(first);
+    return commonStarts.has(word);
   }
 
   function normalizeApiBase(value) {
@@ -1311,13 +1651,52 @@
     return trimmed.replace(/\/+$/, "");
   }
 
+  function detectPlatform() {
+    const host = window.location.hostname.toLowerCase();
+    if (host === "meet.google.com") {
+      return "google_meet";
+    }
+    if (
+      host === "teams.microsoft.com" ||
+      host === "teams.cloud.microsoft" ||
+      host === "teams.live.com"
+    ) {
+      return "microsoft_teams";
+    }
+    return "unknown";
+  }
+
+  function platformSource() {
+    return state.platform === "microsoft_teams" ? "microsoft_teams" : "google_meet";
+  }
+
+  function platformLabel() {
+    return state.platform === "microsoft_teams" ? "Microsoft Teams" : "Google Meet";
+  }
+
   function meetingTitle() {
-    const title = normalizeText(document.title).replace(/\s*-\s*Google Meet\s*$/i, "");
+    const title = normalizeText(document.title)
+      .replace(/\s*-\s*Google Meet\s*$/i, "")
+      .replace(/\s*\|\s*Microsoft Teams\s*$/i, "")
+      .replace(/\s*-\s*Microsoft Teams\s*$/i, "");
     const code = meetingCode();
-    return title || (code ? `Meet - ${code}` : "Google Meet live meeting");
+    if (title) {
+      return title;
+    }
+    if (state.platform === "microsoft_teams") {
+      return code ? `Teams - ${code}` : "Microsoft Teams live meeting";
+    }
+    return code ? `Meet - ${code}` : "Google Meet live meeting";
   }
 
   function meetingCode() {
+    if (detectPlatform() === "microsoft_teams") {
+      const explicitMatch = decodeURIComponent(window.location.href).match(/19:meeting_([^@/?#]+)/i);
+      if (explicitMatch) {
+        return `teams-${hashText(explicitMatch[1])}`;
+      }
+      return `teams-${hashText(window.location.origin + window.location.pathname)}`;
+    }
     const match = window.location.pathname.match(/\/([a-z]{3}-[a-z]{4}-[a-z]{3})/i);
     return match ? match[1].toLowerCase() : "";
   }
@@ -1357,7 +1736,9 @@
     const miniRecordDot = ui.querySelector('[data-role="mini-record-dot"]');
 
     const hasActiveMeeting = Boolean(state.meetingId);
-    const stateText = state.isCapturing
+    const stateText = state.isEnding
+      ? `Ending #${state.meetingId}`
+      : state.isCapturing
       ? `Live #${state.meetingId}`
       : hasActiveMeeting
         ? `Paused #${state.meetingId}`
@@ -1370,9 +1751,10 @@
     statePill.dataset.state = state.isCapturing ? "live" : hasActiveMeeting ? "paused" : "idle";
     count.textContent = `${state.sentCount} sent · ${state.pendingSegments.length} queued`;
     start.textContent = hasActiveMeeting && !state.isCapturing ? "Resume" : "Start";
-    start.disabled = state.isCapturing;
-    pause.disabled = !state.isCapturing;
-    end.disabled = !hasActiveMeeting;
+    start.disabled = state.isCapturing || state.isEnding;
+    pause.disabled = !state.isCapturing || state.isEnding;
+    end.disabled = !hasActiveMeeting || state.isEnding;
+    end.textContent = state.isEnding ? "Ending..." : "End";
     apiInput.disabled = hasActiveMeeting;
     timer.textContent = elapsed;
     recordDot.dataset.state = state.isCapturing ? "live" : hasActiveMeeting ? "paused" : "idle";

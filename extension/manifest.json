@@ -2,17 +2,31 @@
   "manifest_version": 3,
   "name": "iMann Live Capture",
   "description": "Botless live caption capture for iMann meetings.",
-  "version": "0.1.14",
+  "version": "0.1.17",
   "permissions": ["storage"],
   "host_permissions": [
     "http://127.0.0.1:8000/*",
     "http://localhost:8000/*",
     "http://127.0.0.1:5173/*",
-    "http://localhost:5173/*"
+    "http://localhost:5173/*",
+    "https://teams.microsoft.com/*",
+    "https://*.teams.microsoft.com/*",
+    "https://teams.cloud.microsoft/*",
+    "https://*.teams.cloud.microsoft/*",
+    "https://teams.live.com/*",
+    "https://*.teams.live.com/*"
   ],
   "content_scripts": [
     {
-      "matches": ["https://meet.google.com/*"],
+      "matches": [
+        "https://meet.google.com/*",
+        "https://teams.microsoft.com/*",
+        "https://*.teams.microsoft.com/*",
+        "https://teams.cloud.microsoft/*",
+        "https://*.teams.cloud.microsoft/*",
+        "https://teams.live.com/*",
+        "https://*.teams.live.com/*"
+      ],
       "css": ["src/content.css"],
       "js": ["src/content.js"],
       "run_at": "document_idle"

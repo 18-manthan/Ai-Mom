@@ -46,6 +46,7 @@ type Meeting = {
   started_at: string | null;
   finished_at: string | null;
   segment_count: number;
+  speakers: string[];
 };
 
 type NotesPreset = "short" | "detailed" | "citations" | "actions" | "team_sync" | "advice";
@@ -118,6 +119,7 @@ function formatDuration(seconds: number | null) {
 
 function sourceLabel(source: string | null) {
   if (source === "google_meet") return "Google Meet";
+  if (source === "microsoft_teams") return "Microsoft Teams";
   return source ? source.replace(/_/g, " ") : "Uploaded";
 }
 
@@ -221,7 +223,7 @@ function formatMeetingClock(meeting: Meeting) {
 }
 
 function meetingPeople(meeting: Meeting) {
-  if (meeting.is_live) return "you";
+  if (meeting.speakers?.length) return meeting.speakers.join(", ");
   return meeting.source ? sourceLabel(meeting.source) : "Uploaded recording";
 }
 
@@ -712,14 +714,17 @@ function App() {
       </aside>
 
       <div className="creator-credit">
-        <span>Made with love by</span>
+        <span>Made with ❤️ by</span>
         <strong>Manthan Chouhan</strong>
-        <small>AI DEV</small>
+        <a href="https://linkedin.com/in/manthan-chouhan-35ba4b220/" target="_blank" rel="noreferrer">
+          AI DEV
+        </a>
+        <span>@ CIS </span>
       </div>
 
       <section className="content">
         <div className="top-banner">
-          <strong>Use the iMann Chrome extension with Google Meet captions for live capture.</strong>
+          <strong>Use the iMann Chrome extension with Google Meet or Microsoft Teams captions for live capture.</strong>
         </div>
 
         {!backendOnline && (
