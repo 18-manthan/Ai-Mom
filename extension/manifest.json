@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "iMann Live Capture",
   "description": "Botless live caption capture for iMann meetings.",
-  "version": "0.1.17",
+  "version": "0.1.19",
   "permissions": ["storage"],
   "host_permissions": [
     "http://127.0.0.1:8000/*",

@@ -515,10 +515,15 @@ def get_meeting(meeting_id: int, db: Session = Depends(get_db)) -> dict:
                 segments = []
             if transcript.get("live", False):
                 segments = compact_live_segments(segments)
+            cleaned_segments = transcript.get("cleaned_segments", [])
+            if not isinstance(cleaned_segments, list):
+                cleaned_segments = []
+            if transcript.get("live", False) and cleaned_segments:
+                cleaned_segments = compact_live_segments(cleaned_segments)
             payload.update(
                 {
                     "segments": segments,
-                    "cleaned_segments": transcript.get("cleaned_segments", []),
+                    "cleaned_segments": cleaned_segments,
                     "language": transcript.get("language"),
                     "language_probability": transcript.get("language_probability"),
                     "is_live": bool(transcript.get("live", False)),

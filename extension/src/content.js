@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const SCRIPT_VERSION = "0.1.17";
+  const SCRIPT_VERSION = "0.1.19";
 
   if (window.__MOM_LIVE_CAPTURE_LOADED__ && window.__MOM_LIVE_CAPTURE_VERSION__ === SCRIPT_VERSION) {
     return;
@@ -70,7 +70,7 @@
         <div class="mom-head" data-drag-handle="true">
           <div class="mom-title">
             <strong>iMann</strong>
-            <span>${platformLabel()} captions</span>
+            <span>${platformLabel()} captions · v${SCRIPT_VERSION}</span>
           </div>
           <div class="mom-state-cluster">
             <span class="mom-status-dot" data-role="record-dot"></span>
@@ -802,21 +802,187 @@
   }
 
   function compactPreviewSegments(segments) {
+    const knownSpeakers = knownPreviewSpeakers(segments);
     const compacted = [];
     for (const segment of segments) {
       const text = normalizeText(segment.text);
       if (!text) {
         continue;
       }
-      const preview = { ...segment, text };
-      const last = compacted[compacted.length - 1];
-      if (shouldMergePreview(last, preview)) {
-        compacted[compacted.length - 1] = mergePreviewSegment(last, preview);
-      } else {
-        compacted.push(preview);
+      const preview = {
+        ...segment,
+        speaker: normalizeSpeakerLabel(segment.speaker || "Speaker"),
+        text,
+      };
+      const splitSegments = splitEmbeddedSpeakerTurns(preview, knownSpeakers);
+      for (const splitSegment of splitSegments) {
+        appendCompactedPreview(compacted, splitSegment);
       }
     }
     return compacted;
+  }
+
+  function appendCompactedPreview(compacted, preview) {
+    const text = normalizeText(preview.text);
+    if (!text) {
+      return;
+    }
+    const normalized = {
+      ...preview,
+      speaker: normalizeSpeakerLabel(preview.speaker || "Speaker"),
+      text,
+    };
+
+    for (let index = compacted.length - 1; index >= Math.max(0, compacted.length - 40); index -= 1) {
+      const previous = compacted[index];
+      if (shouldMergePreview(previous, normalized)) {
+        compacted[index] = mergePreviewSegment(previous, normalized);
+        return;
+      }
+    }
+
+    compacted.push(normalized);
+  }
+
+  function knownPreviewSpeakers(segments) {
+    const speakers = [];
+    for (const segment of segments) {
+      const speaker = normalizeSpeakerLabel(segment.speaker || "");
+      if (isRealSpeakerName(speaker) && !speakers.includes(speaker)) {
+        speakers.push(speaker);
+      }
+      for (const embeddedSpeaker of discoverEmbeddedSpeakers(segment.text || "")) {
+        if (isRealSpeakerName(embeddedSpeaker) && !speakers.includes(embeddedSpeaker)) {
+          speakers.push(embeddedSpeaker);
+        }
+      }
+    }
+    return speakers.sort((a, b) => b.length - a.length);
+  }
+
+  function discoverEmbeddedSpeakers(text) {
+    const cleaned = cleanCaptionText(text);
+    if (!cleaned) {
+      return [];
+    }
+    const captionStarts = [
+      "yeah",
+      "yes",
+      "no",
+      "okay",
+      "ok",
+      "so",
+      "and",
+      "but",
+      "in",
+      "the",
+      "from",
+      "great",
+      "have",
+      "here",
+      "heres",
+      "hello",
+      "hey",
+      "hi",
+      "good",
+      "thanks",
+      "we",
+      "i",
+      "im",
+      "you",
+      "it",
+      "is",
+      "now",
+      "please",
+    ].join("|");
+    const pattern = new RegExp(
+      `(?:^|[.!?]\\s+)([A-Z][A-Za-z]*(?:\\s+[A-Z][A-Za-z]*){1,3})(?::)?\\s+(?=(?:${captionStarts})\\b)`,
+      "g",
+    );
+    const speakers = [];
+    for (const match of cleaned.matchAll(pattern)) {
+      const speaker = normalizeSpeakerLabel(match[1]);
+      if (isRealSpeakerName(speaker) && !speakers.includes(speaker)) {
+        speakers.push(speaker);
+      }
+    }
+    return speakers;
+  }
+
+  function isRealSpeakerName(speaker) {
+    const lower = normalizeText(speaker).toLowerCase();
+    if (!lower || lower === "speaker" || lower === "you" || lower === "participants" || lower.startsWith("language ")) {
+      return false;
+    }
+    const first = lower.split(/\s+/)[0]?.replace(/[^a-z]/g, "") || "";
+    if (isCommonCaptionStart(first)) {
+      return false;
+    }
+    return speaker.split(/\s+/).filter(Boolean).length >= 2;
+  }
+
+  function splitEmbeddedSpeakerTurns(segment, knownSpeakers) {
+    const text = cleanCaptionText(segment.text);
+    if (!text || knownSpeakers.length === 0) {
+      return [segment];
+    }
+
+    const matches = [];
+    for (const speaker of knownSpeakers) {
+      const escaped = escapeRegExp(speaker);
+      const pattern = new RegExp(`(?:^|(?<=[.!?]\\s))(${escaped})(?::)?\\s+`, "gi");
+      for (const match of text.matchAll(pattern)) {
+        matches.push({
+          index: match.index + match[0].indexOf(match[1]),
+          end: match.index + match[0].length,
+          speaker,
+        });
+      }
+    }
+
+    if (matches.length === 0) {
+      const split = splitLeadingParticipantLabel(text);
+      if (!split) {
+        return [segment];
+      }
+      const speaker = normalizeSpeakerLabel(split.speaker);
+      return [{ ...segment, speaker, text: stripRepeatedSpeakerPrefixes(split.text, speaker) }];
+    }
+
+    matches.sort((a, b) => (a.index === b.index ? b.end - a.end : a.index - b.index));
+    const deduped = [];
+    let lastEnd = -1;
+    for (const match of matches) {
+      if (match.index < lastEnd) {
+        continue;
+      }
+      deduped.push(match);
+      lastEnd = match.end;
+    }
+
+    const start = Number(segment.start) || 0;
+    const parts = [];
+    const prefix = text.slice(0, deduped[0].index).trim();
+    if (prefix) {
+      parts.push({ ...segment, text: prefix });
+    }
+
+    deduped.forEach((match, index) => {
+      const nextStart = deduped[index + 1]?.index ?? text.length;
+      const turnText = stripRepeatedSpeakerPrefixes(text.slice(match.end, nextStart).trim(), match.speaker);
+      if (turnText) {
+        parts.push({
+          ...segment,
+          speaker: normalizeSpeakerLabel(match.speaker),
+          text: turnText,
+        });
+      }
+    });
+
+    return parts.map((part, index) => ({
+      ...part,
+      start: start + index * 0.01,
+    }));
   }
 
   function shouldMergePreview(previous, next) {
@@ -848,7 +1014,37 @@
   }
 
   function normalizeSpeaker(value) {
-    return normalizeText(value || "Speaker").toLowerCase();
+    return normalizeSpeakerLabel(value || "Speaker").toLowerCase();
+  }
+
+  function normalizeSpeakerLabel(value) {
+    const cleaned = normalizeText(value || "Speaker").replace(/[\s:,-]+$/g, "");
+    if (!cleaned) {
+      return "Speaker";
+    }
+    const words = cleaned.split(/\s+/).filter(Boolean);
+    while (words.length > 2) {
+      const last = words[words.length - 1].replace(/[^A-Za-z]/g, "").toLowerCase();
+      if (isCommonCaptionStart(last) || new Set(["how", "what", "when", "where", "why", "who", "which"]).has(last)) {
+        words.pop();
+        continue;
+      }
+      break;
+    }
+    return words.join(" ") || "Speaker";
+  }
+
+  function stripRepeatedSpeakerPrefixes(text, speaker) {
+    const cleanSpeaker = normalizeText(speaker).replace(/[\s:,-]+$/g, "");
+    if (!cleanSpeaker) {
+      return normalizeText(text);
+    }
+    const pattern = new RegExp(`(?:^|(?<=[.!?]\\s))(${escapeRegExp(cleanSpeaker)})(?::)?\\s+`, "gi");
+    return normalizeText(text).replace(pattern, "").replace(/\s+/g, " ").trim();
+  }
+
+  function escapeRegExp(value) {
+    return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
 
   function parseCaptionText(rawText, node = null) {
@@ -1523,10 +1719,14 @@
       "in",
       "the",
       "from",
+      "great",
+      "have",
       "here",
       "heres",
+      "hello",
       "hey",
       "hi",
+      "good",
       "thanks",
       "we",
       "i",
@@ -1549,6 +1749,9 @@
     if (words.length < 2) {
       return false;
     }
+    if (words.some((word) => /[.!?]/.test(word))) {
+      return false;
+    }
 
     const normalized = words.map((word) => word.replace(/[^A-Za-z]/g, "")).filter(Boolean);
     if (normalized.length !== words.length) {
@@ -1567,10 +1770,14 @@
       "in",
       "the",
       "from",
+      "great",
+      "have",
       "here",
       "heres",
+      "hello",
       "hey",
       "hi",
+      "good",
       "thanks",
       "we",
       "i",
@@ -1629,10 +1836,14 @@
       "in",
       "the",
       "from",
+      "great",
+      "have",
       "here",
       "heres",
+      "hello",
       "hey",
       "hi",
+      "good",
       "thanks",
       "we",
       "i",

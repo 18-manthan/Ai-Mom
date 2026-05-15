@@ -172,13 +172,14 @@ def _read_payload(path: Path, meeting: Meeting) -> dict[str, Any]:
 
 def compact_live_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     compacted: list[dict[str, Any]] = []
+    known_speakers = _known_speakers_from_segments(segments)
 
     for segment in segments:
         text = _clean_caption_text(str(segment.get("text") or ""))
         if _is_rejected_caption(text, str(segment.get("speaker") or "")):
             continue
 
-        speaker = str(segment.get("speaker") or "Speaker").strip() or "Speaker"
+        speaker = _normalize_speaker_label(str(segment.get("speaker") or "Speaker").strip() or "Speaker")
         if speaker.lower().startswith("language "):
             speaker = "Speaker"
         if str(segment.get("text") or "").strip().lower().startswith("you "):
@@ -193,38 +194,133 @@ def compact_live_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]
                 speaker, text = teams_split
         speaker = _display_speaker_name(speaker)
 
-        normalized = {
+        normalized_segment = {
             **segment,
             "speaker": speaker,
             "text": text,
         }
+        normalized_segments = _split_embedded_speaker_turns(normalized_segment, known_speakers)
 
-        if not compacted:
-            compacted.append(normalized)
-            continue
-
-        absorbed = False
-        for previous in reversed(compacted[-20:]):
-            previous_speaker = str(previous.get("speaker") or "Speaker").strip() or "Speaker"
-            if _can_merge_speaker_updates(previous_speaker, speaker) and _is_caption_update(str(previous.get("text") or ""), text):
-                previous_text = str(previous.get("text") or "")
-                merged_text = _merge_caption_text(previous_text, text)
-                previous_start = previous.get("start", normalized.get("start", 0))
-                previous_end = previous.get("end", previous.get("start", 0))
-                previous.update(normalized)
-                if speaker == "Speaker" and previous_speaker != "Speaker":
-                    previous["speaker"] = previous_speaker
-                previous["text"] = merged_text
-                previous["start"] = min(float(previous_start), float(normalized.get("start", 0)))
-                previous["end"] = max(float(previous_end or 0), float(normalized.get("end", 0) or 0))
-                absorbed = True
-                break
-        if absorbed:
-            continue
-
-        compacted.append(normalized)
+        for normalized in normalized_segments:
+            _append_compacted_segment(compacted, normalized)
 
     return _drop_recent_duplicate_echoes(compacted)
+
+
+def _append_compacted_segment(compacted: list[dict[str, Any]], normalized: dict[str, Any]) -> None:
+    text = _clean_caption_text(str(normalized.get("text") or ""))
+    if not text:
+        return
+    normalized["text"] = text
+
+    if not compacted:
+        compacted.append(normalized)
+        return
+
+    speaker = str(normalized.get("speaker") or "Speaker").strip() or "Speaker"
+    for previous in reversed(compacted[-40:]):
+        previous_speaker = str(previous.get("speaker") or "Speaker").strip() or "Speaker"
+        if _can_merge_speaker_updates(previous_speaker, speaker) and _is_caption_update(str(previous.get("text") or ""), text):
+            previous_text = str(previous.get("text") or "")
+            merged_text = _merge_caption_text(previous_text, text)
+            previous_start = previous.get("start", normalized.get("start", 0))
+            previous_end = previous.get("end", previous.get("start", 0))
+            previous.update(normalized)
+            if speaker == "Speaker" and previous_speaker != "Speaker":
+                previous["speaker"] = previous_speaker
+            previous["text"] = merged_text
+            previous["start"] = min(float(previous_start), float(normalized.get("start", 0)))
+            previous["end"] = max(float(previous_end or 0), float(normalized.get("end", 0) or 0))
+            return
+
+    compacted.append(normalized)
+
+
+def _known_speakers_from_segments(segments: list[dict[str, Any]]) -> list[str]:
+    speakers: list[str] = []
+    for segment in segments:
+        speaker = _normalize_speaker_label(str(segment.get("speaker") or "").strip())
+        if _is_real_speaker_name(speaker) and speaker not in speakers:
+            speakers.append(speaker)
+    return sorted(speakers, key=len, reverse=True)
+
+
+def _is_real_speaker_name(speaker: str) -> bool:
+    cleaned = speaker.strip()
+    lower = cleaned.lower()
+    if not cleaned or lower in {"you", "speaker", "participants", "language english"}:
+        return False
+    if lower.startswith("language "):
+        return False
+    return len(cleaned.split()) >= 2
+
+
+def _normalize_speaker_label(value: str) -> str:
+    speaker = re.sub(r"[\s:,-]+$", "", str(value or "").strip())
+    if not speaker:
+        return "Speaker"
+
+    words = speaker.split()
+    while len(words) > 2:
+        last = re.sub(r"[^A-Za-z]", "", words[-1]).lower()
+        if _is_common_caption_start(last) or last in {"how", "what", "when", "where", "why", "who", "which"}:
+            words.pop()
+            continue
+        break
+    return _display_speaker_name(" ".join(words))
+
+
+def _split_embedded_speaker_turns(segment: dict[str, Any], known_speakers: list[str]) -> list[dict[str, Any]]:
+    text = _clean_caption_text(str(segment.get("text") or ""))
+    if not text or not known_speakers:
+        return [segment]
+
+    matches: list[tuple[int, int, str]] = []
+    for speaker in known_speakers:
+        pattern = re.compile(rf"(?:^|(?<=[.!?]\s))({re.escape(speaker)})(?::)?\s+", re.IGNORECASE)
+        for match in pattern.finditer(text):
+            matches.append((match.start(1), match.end(), speaker))
+
+    if not matches:
+        return [segment]
+
+    matches.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    deduped: list[tuple[int, int, str]] = []
+    last_end = -1
+    for match in matches:
+        if match[0] < last_end:
+            continue
+        deduped.append(match)
+        last_end = match[1]
+
+    start_time = float(segment.get("start", 0) or 0)
+    end_time = float(segment.get("end", start_time) or start_time)
+    parts: list[dict[str, Any]] = []
+
+    prefix = text[: deduped[0][0]].strip()
+    if prefix:
+        parts.append({**segment, "text": prefix})
+
+    for index, (label_start, text_start, speaker) in enumerate(deduped):
+        next_label_start = deduped[index + 1][0] if index + 1 < len(deduped) else len(text)
+        turn_text = text[text_start:next_label_start].strip()
+        if not turn_text:
+            continue
+        turn_text = _strip_repeated_speaker_prefixes(turn_text, speaker)
+        parts.append({**segment, "speaker": speaker, "text": turn_text})
+
+    if not parts:
+        return [segment]
+
+    duration = max(0.0, end_time - start_time)
+    step = duration / max(1, len(parts))
+    for index, part in enumerate(parts):
+        part_start = start_time + (step * index)
+        part_end = start_time + (step * (index + 1))
+        part["start"] = round(part_start, 2)
+        part["end"] = round(max(part_start, part_end), 2)
+        part["speaker"] = _normalize_speaker_label(str(part.get("speaker") or "Speaker"))
+    return parts
 
 
 def _distinct_speakers(segments: list[dict[str, Any]]) -> list[str]:
@@ -537,6 +633,8 @@ def _split_leading_participant_label(text: str) -> tuple[str, str] | None:
 
 def _looks_like_participant_label(words: list[str]) -> bool:
     if len(words) < 2:
+        return False
+    if any(re.search(r"[.!?]", word) for word in words):
         return False
     normalized = [re.sub(r"[^A-Za-z]", "", word) for word in words]
     normalized = [word for word in normalized if word]

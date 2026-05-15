@@ -68,9 +68,13 @@ def cleanup_segments(segments: list[dict[str, Any]]) -> list[dict[str, Any]]:
         output_text = generate_text(
             settings=active_settings,
             instructions=(
-                "Clean meeting transcript segment text. Preserve meaning, timestamps, speaker labels, "
-                "and segment count. Fix obvious ASR mistakes, punctuation, casing, brand names, "
-                "speaker names, and technical terms. Do not add new facts. Return only JSON in this "
+                "Clean meeting transcript segment text without changing the conversation structure. "
+                "Preserve the original speaker turn, meaning, timestamps, speaker labels, and segment count. "
+                "Do not summarize, paraphrase, or convert dialogue into reported speech. Never write phrases "
+                "like \"Aman said\", \"Manthan replied\", or \"the speaker asked\" unless those exact words "
+                "were spoken. Keep first-person/second-person wording as spoken. Fix only obvious ASR mistakes, "
+                "punctuation, casing, brand names, speaker names, repeated caption fragments, repeated embedded "
+                "speaker labels, and technical terms. Do not add new facts. Return only JSON in this "
                 "shape: {\"segments\":[{\"index\":0,\"text\":\"cleaned text\"}]}. "
                 "Use double quotes for all JSON strings. Do not return markdown or explanations."
             ),

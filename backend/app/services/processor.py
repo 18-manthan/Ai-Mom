@@ -103,6 +103,7 @@ def _set_cleanup_status(
 
 def process_cleanup(meeting_id: int) -> None:
     from .cleanup import cleanup_segments
+    from .live import compact_live_segments
 
     db = SessionLocal()
     started_at = time.perf_counter()
@@ -121,6 +122,10 @@ def process_cleanup(meeting_id: int) -> None:
 
         payload = json.loads(transcript_path.read_text(encoding="utf-8"))
         segments = payload.get("segments", [])
+        if payload.get("live", False):
+            segments = compact_live_segments(segments if isinstance(segments, list) else [])
+            payload["segments"] = segments
+            payload["speakers"] = _distinct_payload_speakers(segments)
         cleaned_segments = cleanup_segments(segments)
 
         payload["cleaned_segments"] = cleaned_segments
@@ -144,6 +149,15 @@ def process_cleanup(meeting_id: int) -> None:
             _set_cleanup_status(db, meeting, "failed", str(exc))
     finally:
         db.close()
+
+
+def _distinct_payload_speakers(segments: list[dict]) -> list[str]:
+    speakers: list[str] = []
+    for segment in segments:
+        speaker = str(segment.get("speaker") or "").strip()
+        if speaker and speaker not in {"Speaker", "Participants"} and speaker not in speakers:
+            speakers.append(speaker)
+    return speakers
 
 
 def process_summary(meeting_id: int, preset: str = "short") -> None:
