@@ -9,6 +9,7 @@ import {
   LayoutList,
   MessageSquare,
   Moon,
+  Pencil,
   Radio,
   Search,
   Send,
@@ -73,6 +74,16 @@ type Segment = {
   end: number;
   speaker: string;
   text: string;
+};
+
+type ParticipantStat = {
+  name: string;
+  initials: string;
+  color: string;
+  seconds: number;
+  words: number;
+  turns: number;
+  percent: number;
 };
 
 type MeetingDetail = Meeting & {
@@ -235,17 +246,149 @@ function speakerInitials(name: string) {
   return `${words[0][0]}${words[1][0]}`.toUpperCase();
 }
 
+function normalizeParticipantName(value: string) {
+  return value
+    .replace(/\([^)]*\)/g, "")
+    .replace(/\b(?:meeting host|host|visitor|domain_disabled|domain disabled)\b/gi, "")
+    .replace(/[\s:,-]+$/g, "")
+    .trim();
+}
+
+function isValidParticipantName(value: string) {
+  const name = normalizeParticipantName(value);
+  const lower = name.toLowerCase();
+  const words = lower.split(/\s+/).filter(Boolean);
+  const badStarts = new Set([
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "but",
+    "can",
+    "captions",
+    "from",
+    "good",
+    "great",
+    "have",
+    "here",
+    "how",
+    "i",
+    "im",
+    "in",
+    "is",
+    "it",
+    "language",
+    "now",
+    "okay",
+    "ok",
+    "participants",
+    "please",
+    "so",
+    "speaker",
+    "the",
+    "this",
+    "what",
+    "you",
+  ]);
+
+  if (!name || lower === "speaker" || lower === "you" || lower === "english" || lower.startsWith("language ")) {
+    return false;
+  }
+  if (words.length < 2 || words.length > 5) {
+    return false;
+  }
+  if (badStarts.has(words[0])) {
+    return false;
+  }
+  return /[a-z]/i.test(name);
+}
+
+function participantColor(index: number) {
+  const colors = ["#ef3f55", "#9fbd08", "#7cda24", "#ffcf5d", "#7c8cff", "#f076c8", "#38bdf8"];
+  return colors[index % colors.length];
+}
+
+function wordCount(text: string) {
+  return text.split(/\s+/).filter(Boolean).length;
+}
+
+function buildParticipantStats(segments: Segment[], knownSpeakers: string[] = []) {
+  const stats = new Map<string, Omit<ParticipantStat, "initials" | "color" | "percent">>();
+
+  knownSpeakers.forEach((speaker) => {
+    const name = normalizeParticipantName(speaker);
+    if (isValidParticipantName(name) && !stats.has(name)) {
+      stats.set(name, { name, seconds: 0, words: 0, turns: 0 });
+    }
+  });
+
+  segments.forEach((segment) => {
+    const name = normalizeParticipantName(segment.speaker);
+    if (!isValidParticipantName(name)) {
+      return;
+    }
+    const existing = stats.get(name) ?? { name, seconds: 0, words: 0, turns: 0 };
+    const seconds = Math.max(0, Number(segment.end || 0) - Number(segment.start || 0));
+    existing.seconds += seconds;
+    existing.words += wordCount(segment.text);
+    existing.turns += 1;
+    stats.set(name, existing);
+  });
+
+  const rows = Array.from(stats.values());
+  const totalWords = rows.reduce((sum, item) => sum + item.words, 0);
+  return rows
+    .sort((first, second) => second.words - first.words)
+    .map((item, index) => ({
+      ...item,
+      initials: speakerInitials(item.name),
+      color: participantColor(index),
+      percent: totalWords > 0 ? Math.round((item.words / totalWords) * 100) : 0,
+    }));
+}
+
+function participantDonutGradient(stats: ParticipantStat[]) {
+  if (stats.length === 0) {
+    return "conic-gradient(var(--border) 0 360deg)";
+  }
+  let cursor = 0;
+  const parts = stats.map((participant) => {
+    const start = cursor;
+    const sweep = Math.max(2, (participant.percent / 100) * 360);
+    cursor += sweep;
+    return `${participant.color} ${start}deg ${cursor}deg`;
+  });
+  return `conic-gradient(${parts.join(", ")})`;
+}
+
 function notesPresetLabel(preset: NotesPreset | null) {
   return NOTES_PRESETS.find((item) => item.value === preset)?.label ?? "Meeting notes";
 }
 
+function plainTextPreview(value: string | null | undefined, maxLength: number) {
+  if (!value) return "";
+  return value
+    .split(/\n+/)
+    .map((line) => line.trim().replace(/^#{1,6}\s*/, ""))
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/\*([^*]+)\*/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/^\s*(short summary|detailed summary(?: with citations)?|summary and action items|team sync - project updates|smart ai advice)\s*:?\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLength);
+}
+
 function summaryPreview(summary: string | null) {
   if (!summary) return "Generate AI notes from one of the presets...";
-  return summary.replace(/\s+/g, " ").replace(/[#*_`>-]/g, "").trim().slice(0, 90);
+  return plainTextPreview(summary, 90);
 }
 
 function notePreview(note: GeneratedNote) {
-  return note.content.replace(/\s+/g, " ").replace(/[#*_`>-]/g, "").trim().slice(0, 82);
+  return plainTextPreview(note.content, 82);
 }
 
 function formatNoteTime(value: string | null | undefined) {
@@ -310,6 +453,60 @@ function renderSummaryContent(summary: string) {
   return elements;
 }
 
+function ParticipantsStatsPanel({
+  participantStats,
+  participantTotalSeconds,
+  participantDonut,
+  processingSeconds,
+}: {
+  participantStats: ParticipantStat[];
+  participantTotalSeconds: number;
+  participantDonut: string;
+  processingSeconds: number | null;
+}) {
+  return (
+    <aside className="participant-panel" aria-label="Participants and speaking activity">
+      <header>
+        <span>Participants & Stats</span>
+        <strong>{participantStats.length}</strong>
+      </header>
+
+      <div className="donut-wrap">
+        <div
+          className="participant-donut"
+          style={{ "--donut": participantDonut } as React.CSSProperties}
+          title={`${participantStats.length} participant${participantStats.length === 1 ? "" : "s"}`}
+        >
+          <strong>{Math.round(participantTotalSeconds / 60) || formatDuration(processingSeconds)}</strong>
+          <span>{participantTotalSeconds > 0 ? "min" : "duration"}</span>
+        </div>
+      </div>
+
+      <div className="participant-list">
+        {participantStats.length === 0 && (
+          <p className="participants-empty">No reliable participant names detected yet.</p>
+        )}
+        {participantStats.map((participant) => (
+          <div className="participant-row" key={participant.name}>
+            <span className="participant-dot" style={{ background: participant.color }} />
+            <span className="participant-name" title={participant.name}>{participant.name}</span>
+            <span className="participant-bar">
+              <i style={{ width: `${Math.max(3, participant.percent)}%`, background: participant.color }} />
+            </span>
+            <strong>{participant.percent}%</strong>
+            <div className="participant-tooltip">
+              <b>{participant.name}</b>
+              <span>{participant.turns} turn{participant.turns === 1 ? "" : "s"}</span>
+              <span>{participant.words} words</span>
+              <span>{formatDuration(participant.seconds)} speaking activity</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </aside>
+  );
+}
+
 function formatBackendDateTime(value: string | null) {
   const date = parseBackendDate(value);
   return date ? date.toLocaleString() : "--";
@@ -329,10 +526,14 @@ function App() {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<MeetingDetail | null>(null);
+  const [meetingSearch, setMeetingSearch] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState("");
   const [backendOnline, setBackendOnline] = useState(true);
+  const [renamingMeetingId, setRenamingMeetingId] = useState<number | null>(null);
+  const [renameTitle, setRenameTitle] = useState("");
+  const [renameSaving, setRenameSaving] = useState(false);
   const [transcriptView, setTranscriptView] = useState<"raw" | "clean">("raw");
   const [activeTab, setActiveTab] = useState<Tab>("notes");
   const [notesPreset, setNotesPreset] = useState<NotesPreset>("short");
@@ -505,6 +706,49 @@ function App() {
     }
   }
 
+  function startRenaming(meeting: Meeting) {
+    setRenamingMeetingId(meeting.id);
+    setRenameTitle(meeting.original_filename);
+    setMessage("");
+  }
+
+  function cancelRenaming() {
+    setRenamingMeetingId(null);
+    setRenameTitle("");
+  }
+
+  async function saveMeetingTitle(meetingId: number) {
+    const title = renameTitle.trim();
+    if (!title) {
+      setMessage("Meeting title is required.");
+      return;
+    }
+
+    setRenameSaving(true);
+    setMessage("");
+
+    try {
+      const response = await fetch(`${API_BASE}/api/meetings/${meetingId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title }),
+      });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail ?? "Could not update meeting title");
+      }
+
+      const meeting = (await response.json()) as Meeting;
+      setMeetings((items) => items.map((item) => (item.id === meeting.id ? { ...item, ...meeting } : item)));
+      setDetail((current) => (current?.id === meeting.id ? { ...current, ...meeting } : current));
+      cancelRenaming();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not update meeting title");
+    } finally {
+      setRenameSaving(false);
+    }
+  }
+
   useEffect(() => {
     loadMeetings().catch(() => {
       setBackendOnline(false);
@@ -570,11 +814,6 @@ function App() {
     return () => window.clearInterval(timer);
   }, [detail?.status, detail?.cleanup_status, detail?.summary_status, selectedId]);
 
-  const speakers = useMemo(() => {
-    const names = new Set(detail?.segments.map((segment) => segment.speaker) ?? []);
-    return Array.from(names);
-  }, [detail]);
-
   const canGenerateSummary =
     detail?.status === "completed" &&
     detail.summary_status !== "queued" &&
@@ -599,6 +838,20 @@ function App() {
         ? detail?.segments ?? []
         : [];
 
+  const insightSegments = useMemo(() => {
+    if (!detail) return [];
+    return detail.cleaned_segments.length ? detail.cleaned_segments : detail.segments;
+  }, [detail]);
+
+  const participantStats = useMemo(
+    () => buildParticipantStats(insightSegments, detail?.speakers ?? []),
+    [detail?.speakers, insightSegments],
+  );
+
+  const speakers = participantStats.map((participant) => participant.name);
+  const participantTotalSeconds = participantStats.reduce((sum, participant) => sum + participant.seconds, 0);
+  const participantDonut = participantDonutGradient(participantStats);
+
   const notesHistory = useMemo<GeneratedNote[]>(() => {
     if (!detail) return [];
     if (detail.generated_notes?.length) return detail.generated_notes;
@@ -620,6 +873,25 @@ function App() {
       ? null
       : notesHistory.find((note) => note.id === selectedNoteId) ?? null;
 
+  const filteredMeetings = useMemo(() => {
+    const query = meetingSearch.trim().toLowerCase();
+    if (!query) return meetings;
+    return meetings.filter((meeting) => {
+      const searchable = [
+        meeting.original_filename,
+        meetingPeople(meeting),
+        sourceLabel(meeting.source),
+        statusLabel(meeting),
+        meeting.meeting_code ?? "",
+        meeting.summary ?? "",
+        ...(meeting.speakers ?? []),
+      ]
+        .join(" ")
+        .toLowerCase();
+      return searchable.includes(query);
+    });
+  }, [meetingSearch, meetings]);
+
   const groupedMeetings = useMemo(() => {
     const now = new Date();
     const groups: Array<{
@@ -630,7 +902,7 @@ function App() {
     }> = [];
     const byKey = new Map<string, (typeof groups)[number]>();
 
-    meetings.forEach((meeting) => {
+    filteredMeetings.forEach((meeting) => {
       const date = meetingStartDate(meeting);
       const kind: "day" | "week" = isSameWeek(date, now) ? "day" : "week";
       const keyDate = kind === "day" ? startOfDay(date) : startOfWeek(date);
@@ -650,7 +922,7 @@ function App() {
     });
 
     return groups;
-  }, [meetings]);
+  }, [filteredMeetings]);
 
   return (
     <main className="shell">
@@ -745,7 +1017,11 @@ function App() {
 
             <label className="search-bar">
               <Search size={19} />
-              <input placeholder="Search for keywords, participants, labels, and more..." />
+              <input
+                value={meetingSearch}
+                placeholder="Search for keywords, participants, labels, and more..."
+                onChange={(event) => setMeetingSearch(event.target.value)}
+              />
             </label>
 
             <div className="meeting-toolbar">
@@ -765,7 +1041,44 @@ function App() {
                   <ArrowLeft size={16} />
                   My Meetings
                 </button>
-                <h2>{detail.original_filename}</h2>
+                <div className="detail-title-row">
+                  {renamingMeetingId === detail.id ? (
+                    <form
+                      className="rename-inline detail-rename"
+                      onSubmit={(event) => {
+                        event.preventDefault();
+                        saveMeetingTitle(detail.id);
+                      }}
+                    >
+                      <input
+                        className="rename-input"
+                        value={renameTitle}
+                        autoFocus
+                        maxLength={160}
+                        onChange={(event) => setRenameTitle(event.target.value)}
+                      />
+                      <button className="rename-action primary" type="submit" disabled={renameSaving}>
+                        Save
+                      </button>
+                      <button className="rename-action" type="button" onClick={cancelRenaming} disabled={renameSaving}>
+                        Cancel
+                      </button>
+                    </form>
+                  ) : (
+                    <>
+                      <h2>{detail.original_filename}</h2>
+                      <button
+                        className="icon-button title-edit-button"
+                        type="button"
+                        title="Update call title"
+                        aria-label="Update call title"
+                        onClick={() => startRenaming(detail)}
+                      >
+                        <Pencil size={15} />
+                      </button>
+                    </>
+                  )}
+                </div>
                 <p>
                   <strong>{detailStatusText(detail)}</strong>
                   {detail.language && ` · Language: ${detail.language}`}
@@ -840,6 +1153,9 @@ function App() {
           {!detail && (
             <section className="meeting-dashboard">
               {meetings.length === 0 && <p className="empty">No meetings yet.</p>}
+              {meetings.length > 0 && filteredMeetings.length === 0 && (
+                <p className="empty">No meetings found for "{meetingSearch.trim()}".</p>
+              )}
               {groupedMeetings.map((group) => (
                 <React.Fragment key={group.key}>
                   <div className="meeting-date-group">{group.label}</div>
@@ -850,21 +1166,48 @@ function App() {
                         <strong>{meeting.processing_seconds !== null ? formatDuration(meeting.processing_seconds) : statusLabel(meeting)}</strong>
                         <span>{formatMeetingRowSub(meeting, group.kind)}</span>
                       </div>
-                      <button
-                        className="row-main"
-                        type="button"
-                        onClick={() => {
-                          setSelectedId(meeting.id);
-                          setActiveTab(meeting.summary ? "notes" : "transcript");
-                        }}
-                      >
-                        <span className="row-avatar">{meeting.original_filename.slice(0, 1).toUpperCase()}</span>
-                        <span>
-                          <strong>{meeting.original_filename}</strong>
-                          <small>{meetingPeople(meeting)}</small>
-                          {meeting.summary && <p>{meeting.summary.slice(0, 190)}...</p>}
-                        </span>
-                      </button>
+                      {renamingMeetingId === meeting.id ? (
+                        <div className="row-main row-main-static">
+                          <span className="row-avatar">{meeting.original_filename.slice(0, 1).toUpperCase()}</span>
+                          <form
+                            className="rename-inline row-rename"
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              saveMeetingTitle(meeting.id);
+                            }}
+                          >
+                            <input
+                              className="rename-input"
+                              value={renameTitle}
+                              autoFocus
+                              maxLength={160}
+                              onChange={(event) => setRenameTitle(event.target.value)}
+                            />
+                            <button className="rename-action primary" type="submit" disabled={renameSaving}>
+                              Save
+                            </button>
+                            <button className="rename-action" type="button" onClick={cancelRenaming} disabled={renameSaving}>
+                              Cancel
+                            </button>
+                          </form>
+                        </div>
+                      ) : (
+                        <button
+                          className="row-main"
+                          type="button"
+                          onClick={() => {
+                            setSelectedId(meeting.id);
+                            setActiveTab(meeting.summary ? "notes" : "transcript");
+                          }}
+                        >
+                          <span className="row-avatar">{meeting.original_filename.slice(0, 1).toUpperCase()}</span>
+                          <span>
+                            <strong>{meeting.original_filename}</strong>
+                            <small>{meetingPeople(meeting)}</small>
+                            {meeting.summary && <p>{plainTextPreview(meeting.summary, 190)}...</p>}
+                          </span>
+                        </button>
+                      )}
                       <div className="row-actions">
                         {shouldShowMeetingMetaBadge(meeting) && (
                           <span className={meeting.status === "processing" && meeting.is_live ? "live-badge active" : "live-badge"}>
@@ -874,6 +1217,13 @@ function App() {
                             {meeting.segment_count ? `${meeting.segment_count} lines` : ""}
                           </span>
                         )}
+                        <button
+                          title="Update call title"
+                          type="button"
+                          onClick={() => startRenaming(meeting)}
+                        >
+                          <Pencil size={15} />
+                        </button>
                         <button
                           title="Delete meeting"
                           type="button"
@@ -890,7 +1240,8 @@ function App() {
           )}
 
           {detail && (
-            <>
+            <div className="meeting-detail-shell">
+              <div className="meeting-detail-main">
               {activeTab === "chat" && (
                 <section className="dashboard-panel">
                   <section className="meeting-chat">
@@ -1171,30 +1522,42 @@ function App() {
               )}
 
               {activeTab === "insights" && (
-                <section className="dashboard-panel insights-grid">
-                <div className="metric">
-                  <span>Speakers</span>
-                  <strong>{speakers.length || 0}</strong>
-                </div>
-                <div className="metric">
-                  <span>Raw Segments</span>
-                  <strong>{detail.segments.length}</strong>
-                </div>
-                <div className="metric">
-                  <span>Source</span>
-                  <strong>{sourceLabel(detail.source)}</strong>
-                </div>
-                <div className="metric">
-                  <span>Cleaned</span>
-                  <strong>{detail.cleaned_segments.length ? "Yes" : "No"}</strong>
-                </div>
-                <div className="metric">
-                  <span>Notes Preset</span>
-                  <strong>{detail.summary_preset ?? "--"}</strong>
-                </div>
-              </section>
+                <section className="dashboard-panel">
+                  <section className="insights-main">
+                    <div className="metric">
+                      <span>Participants</span>
+                      <strong>{participantStats.length || 0}</strong>
+                    </div>
+                    <div className="metric">
+                      <span>Transcript Lines</span>
+                      <strong>{insightSegments.length}</strong>
+                    </div>
+                    <div className="metric">
+                      <span>Source</span>
+                      <strong>{sourceLabel(detail.source)}</strong>
+                    </div>
+                    <div className="metric">
+                      <span>Cleaned Transcript</span>
+                      <strong>{detail.cleaned_segments.length ? "Ready" : "Not yet"}</strong>
+                    </div>
+                    <article className="insight-note">
+                      <h3>Participant detection</h3>
+                      <p>
+                        Participant stats are calculated from the finalized transcript turns. Generic labels and caption
+                        noise are ignored so speaker count stays closer to the real meeting.
+                      </p>
+                    </article>
+                  </section>
+                </section>
               )}
-            </>
+              </div>
+              <ParticipantsStatsPanel
+                participantStats={participantStats}
+                participantTotalSeconds={participantTotalSeconds}
+                participantDonut={participantDonut}
+                processingSeconds={detail.processing_seconds}
+              />
+            </div>
           )}
         </div>
       </section>

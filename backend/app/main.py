@@ -29,6 +29,10 @@ class ChatRequest(BaseModel):
     question: str
 
 
+class MeetingUpdateRequest(BaseModel):
+    title: str
+
+
 class LiveMeetingStartRequest(BaseModel):
     title: str | None = None
     source: str = "google_meet"
@@ -392,6 +396,28 @@ def finish_live(
         meeting = finish_live_meeting(db, meeting)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _meeting_payload(meeting)
+
+
+@app.patch("/api/meetings/{meeting_id}")
+def update_meeting(
+    meeting_id: int,
+    request: MeetingUpdateRequest,
+    db: Session = Depends(get_db),
+) -> dict:
+    meeting = db.get(Meeting, meeting_id)
+    if meeting is None:
+        raise HTTPException(status_code=404, detail="Meeting not found")
+
+    title = request.title.strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Meeting title is required")
+    if len(title) > 160:
+        raise HTTPException(status_code=400, detail="Meeting title must be 160 characters or less")
+
+    meeting.original_filename = title
+    db.commit()
+    db.refresh(meeting)
     return _meeting_payload(meeting)
 
 
