@@ -1,21 +1,27 @@
 import json
 import re
-import shutil
 from pathlib import Path
-from uuid import uuid4
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from .config import settings
 from .db import get_db, init_db
-from .models import Meeting
-from .services.audio import validate_media_file
+from .models import AuthSession, Meeting, User
+from .services.auth import (
+    create_session,
+    current_admin,
+    current_user,
+    hash_password,
+    normalize_email,
+    user_payload,
+    verify_password,
+)
 from .services.chat import answer_meeting_question
 from .services.live import append_live_segment, compact_live_segments, finish_live_meeting, start_live_meeting
-from .services.processor import process_cleanup, process_meeting, process_summary
+from .services.processor import process_cleanup, process_summary
 
 
 app = FastAPI(title="iMann AI Meeting Transcription")
@@ -31,6 +37,15 @@ class ChatRequest(BaseModel):
 
 class MeetingUpdateRequest(BaseModel):
     title: str
+
+
+class AuthRequest(BaseModel):
+    email: str
+    password: str
+
+
+class SignupRequest(AuthRequest):
+    name: str
 
 
 class LiveMeetingStartRequest(BaseModel):
@@ -69,7 +84,6 @@ app.add_middleware(
 
 @app.on_event("startup")
 def on_startup() -> None:
-    settings.upload_dir.mkdir(parents=True, exist_ok=True)
     settings.transcript_dir.mkdir(parents=True, exist_ok=True)
     init_db()
 
@@ -315,38 +329,123 @@ def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/api/meetings")
-def upload_meeting(
-    background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
+@app.post("/api/auth/signup")
+def signup(request: SignupRequest, db: Session = Depends(get_db)) -> dict:
+    name = request.name.strip()
+    email = normalize_email(request.email)
+    password = request.password
+    if not name:
+        raise HTTPException(status_code=400, detail="Name is required")
+    if "@" not in email or "." not in email:
+        raise HTTPException(status_code=400, detail="Valid email is required")
+    if len(password) < 8:
+        raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if db.query(User).filter(User.email == email).first() is not None:
+        raise HTTPException(status_code=409, detail="User already exists")
+
+    is_first_user = db.query(User).count() == 0
+    user = User(
+        name=name,
+        email=email,
+        password_hash=hash_password(password),
+        role="super_admin" if is_first_user else "user",
+        status="approved" if is_first_user else "pending",
+    )
+    db.add(user)
+    db.commit()
+    db.refresh(user)
+
+    if not is_first_user:
+        return {
+            "status": "pending",
+            "message": "Signup request submitted. Super Admin approval is required before login.",
+            "user": user_payload(user),
+        }
+
+    token = create_session(db, user)
+    return {"status": "approved", "token": token, "user": user_payload(user)}
+
+
+@app.post("/api/auth/login")
+def login(request: AuthRequest, db: Session = Depends(get_db)) -> dict:
+    email = normalize_email(request.email)
+    user = db.query(User).filter(User.email == email).first()
+    if user is None or not verify_password(request.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if user.status == "pending":
+        raise HTTPException(status_code=403, detail="Account is waiting for Super Admin approval")
+    if user.status == "rejected":
+        raise HTTPException(status_code=403, detail="Signup request was rejected")
+
+    token = create_session(db, user)
+    return {"token": token, "user": user_payload(user)}
+
+
+@app.get("/api/auth/me")
+def me(user: User = Depends(current_user)) -> dict:
+    return {"user": user_payload(user)}
+
+
+@app.post("/api/auth/logout")
+def logout(
+    authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> dict:
-    try:
-        validate_media_file(file.filename or "")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(" ", 1)[1].strip()
+        session = db.query(AuthSession).filter(AuthSession.token == token).first()
+        if session is not None:
+            db.delete(session)
+            db.commit()
+    return {"ok": True}
 
-    suffix = Path(file.filename or "").suffix.lower()
-    safe_name = f"{uuid4().hex}{suffix}"
-    upload_path = settings.upload_dir / safe_name
-    with upload_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
 
-    meeting = Meeting(
-        original_filename=file.filename or safe_name,
-        status="uploaded",
-        upload_path=str(upload_path),
-    )
-    db.add(meeting)
+@app.get("/api/admin/users")
+def list_users(
+    _: User = Depends(current_admin),
+    db: Session = Depends(get_db),
+) -> list[dict]:
+    users = db.query(User).order_by(User.created_at.desc()).all()
+    return [user_payload(user) for user in users]
+
+
+@app.post("/api/admin/users/{user_id}/approve")
+def approve_user(
+    user_id: int,
+    _: User = Depends(current_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.status = "approved"
     db.commit()
-    db.refresh(meeting)
+    db.refresh(user)
+    return user_payload(user)
 
-    background_tasks.add_task(process_meeting, meeting.id)
-    return _meeting_payload(meeting)
+
+@app.post("/api/admin/users/{user_id}/reject")
+def reject_user(
+    user_id: int,
+    _: User = Depends(current_admin),
+    db: Session = Depends(get_db),
+) -> dict:
+    user = db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.role == "super_admin":
+        raise HTTPException(status_code=400, detail="Super Admin cannot be rejected")
+    user.status = "rejected"
+    db.commit()
+    db.refresh(user)
+    return user_payload(user)
 
 
 @app.get("/api/meetings")
-def list_meetings(db: Session = Depends(get_db)) -> list[dict]:
+def list_meetings(
+    _: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> list[dict]:
     meetings = db.query(Meeting).order_by(Meeting.created_at.desc()).all()
     return [_meeting_payload(meeting) for meeting in meetings]
 
@@ -403,6 +502,7 @@ def finish_live(
 def update_meeting(
     meeting_id: int,
     request: MeetingUpdateRequest,
+    _: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     meeting = db.get(Meeting, meeting_id)
@@ -426,6 +526,7 @@ def start_summary(
     meeting_id: int,
     background_tasks: BackgroundTasks,
     request: SummaryRequest | None = None,
+    _: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     meeting = db.get(Meeting, meeting_id)
@@ -462,6 +563,7 @@ def start_summary(
 def start_cleanup(
     meeting_id: int,
     background_tasks: BackgroundTasks,
+    _: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     meeting = db.get(Meeting, meeting_id)
@@ -485,6 +587,7 @@ def start_cleanup(
 def ask_meeting_chat(
     meeting_id: int,
     request: ChatRequest,
+    _: User = Depends(current_user),
     db: Session = Depends(get_db),
 ) -> dict:
     meeting = db.get(Meeting, meeting_id)
@@ -521,7 +624,11 @@ def ask_meeting_chat(
 
 
 @app.get("/api/meetings/{meeting_id}")
-def get_meeting(meeting_id: int, db: Session = Depends(get_db)) -> dict:
+def get_meeting(
+    meeting_id: int,
+    _: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict:
     meeting = db.get(Meeting, meeting_id)
     if meeting is None:
         raise HTTPException(status_code=404, detail="Meeting not found")
@@ -565,7 +672,11 @@ def get_meeting(meeting_id: int, db: Session = Depends(get_db)) -> dict:
 
 
 @app.delete("/api/meetings/{meeting_id}")
-def delete_meeting(meeting_id: int, db: Session = Depends(get_db)) -> dict:
+def delete_meeting(
+    meeting_id: int,
+    _: User = Depends(current_user),
+    db: Session = Depends(get_db),
+) -> dict:
     meeting = db.get(Meeting, meeting_id)
     if meeting is None:
         raise HTTPException(status_code=404, detail="Meeting not found")

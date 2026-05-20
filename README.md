@@ -1,12 +1,12 @@
-# MOM - Minimal AI Meeting Transcription
+# iMann - Live Meeting Intelligence
 
-Local-first meeting transcription MVP.
+Lightweight AI meeting assistant for botless Google Meet and Microsoft Teams live caption capture.
 
 ## Stack
 
 - Backend: FastAPI, SQLite
-- Transcription: faster-whisper on CPU with `int8`
-- Speaker labels: local token-free audio feature clustering
+- Live transcription: Chrome/Edge extension captures Google Meet and Microsoft Teams captions
+- Speaker labels: preserved from meeting-platform caption metadata when available
 - Notes: OpenAI or Groq API, generated on demand from selectable presets
 - Cleanup: OpenAI or Groq API, keeps raw transcript and adds a cleaned transcript view
 - Frontend: React + Vite
@@ -15,10 +15,9 @@ Local-first meeting transcription MVP.
 
 - Python 3.11+
 - Node.js 20+
-- `ffmpeg` installed and available on PATH
 - `OPENAI_API_KEY` or `GROQ_API_KEY` for cleanup and summaries
 
-No Hugging Face token and no GPU are required.
+No Whisper model, no `ffmpeg`, no Hugging Face token, and no GPU are required for the default live-caption workflow.
 
 ## Setup
 
@@ -52,48 +51,8 @@ By default, generated runtime files stay under `backend/`:
 
 ```bash
 DATABASE_URL=sqlite:///./backend/mom.db
-UPLOAD_DIR=backend/uploads
 TRANSCRIPT_DIR=backend/transcripts
 ```
-
-For better Hindi + English accuracy, change this in `.env` if your CPU/RAM can handle it:
-
-```bash
-WHISPER_MODEL=medium
-```
-
-## Speed Tuning
-
-CPU transcription speed depends mostly on model size and beam size.
-
-Fastest local mode:
-
-```bash
-WHISPER_MODEL=base
-WHISPER_BEAM_SIZE=1
-WHISPER_COMPUTE_TYPE=int8
-ENABLE_DIARIZATION=false
-```
-
-Balanced MVP mode:
-
-```bash
-WHISPER_MODEL=small
-WHISPER_BEAM_SIZE=1
-WHISPER_COMPUTE_TYPE=int8
-ENABLE_DIARIZATION=true
-```
-
-Better accuracy, slower CPU mode:
-
-```bash
-WHISPER_MODEL=medium
-WHISPER_BEAM_SIZE=1
-WHISPER_COMPUTE_TYPE=int8
-ENABLE_DIARIZATION=true
-```
-
-If meetings are mostly one language, setting `WHISPER_LANGUAGE=en` or `WHISPER_LANGUAGE=hi` can avoid language auto-detection and slightly speed up the run. Keep it blank for mixed Hindi + English meetings.
 
 ## Run Backend
 
@@ -128,21 +87,31 @@ BACKEND_PORT=8001 FRONTEND_PORT=5174 ./start.sh
 OPEN_UI=false ./start.sh
 ```
 
-## Google Meet Live Capture
+## Authentication
 
-MOM includes a local Chrome/Edge extension scaffold for botless Google Meet capture.
+iMann includes lightweight built-in authentication for deployment:
+
+- First signup becomes the approved **Super Admin** automatically.
+- Later signups are created as **pending**.
+- Pending users cannot login until the Super Admin approves them.
+- Super Admin can approve or reject users from the **Super Admin** page in the dashboard.
+
+The dashboard APIs require login. The browser extension live-capture endpoints remain available so Google Meet and Microsoft Teams caption capture can continue working from meeting pages.
+
+## Live Capture
+
+iMann includes a local Chrome/Edge extension for botless Google Meet and Microsoft Teams web capture.
 
 1. Run MOM with `./start.sh`.
 2. Open `chrome://extensions`.
 3. Enable **Developer mode**.
 4. Click **Load unpacked** and select the `extension/` folder.
-5. Join Google Meet in the browser, turn on captions, then click **Start** in the MOM panel.
+5. Join Google Meet or Microsoft Teams in the browser, turn on captions, then click **Start** in the iMann panel.
 
 See `extension/README.md` for extension notes.
 
 ## API
 
-- `POST /api/meetings` uploads MP3, WAV, MP4, or M4A
 - `GET /api/meetings` lists meetings
 - `GET /api/meetings/{id}` returns status, processing time, summary, and transcript
 - `POST /api/meetings/{id}/cleanup` starts AI transcript cleanup after transcription
@@ -151,7 +120,7 @@ See `extension/README.md` for extension notes.
 
 ### Live Meeting API
 
-Phase 1 for botless capture lets a browser extension send live caption segments into MOM:
+The browser extension sends live caption segments into iMann:
 
 - `POST /api/live-meetings` starts a live meeting. Body: `{"title":"Weekly Sync","source":"google_meet"}`
 - `POST /api/live-meetings/{id}/segments` appends or updates a caption segment.
@@ -175,4 +144,4 @@ Segment body:
 
 ## Notes
 
-The Phase 1 speaker labeling is fully local and token-free. It clusters audio features around transcript segments, so it is useful for an MVP but not as accurate as Pyannote-style diarization. Cleanup and notes generation are intentionally manual: upload and transcription finish first, then click **AI Cleanup** or choose a notes preset and click **Generate Notes** when you want to spend an AI API call. Notes prefer the cleaned transcript when available.
+The default branch is optimized for lightweight deployment and live captions. Uploaded audio/video transcription with Whisper has been removed from the default install to reduce server size and CPU requirements. Cleanup and notes generation are intentionally manual: finish the live meeting first, then click **AI Cleanup** or choose a notes preset when you want to spend an AI API call. Notes prefer the cleaned transcript when available.

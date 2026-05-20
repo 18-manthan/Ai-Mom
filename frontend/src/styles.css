@@ -64,6 +64,113 @@ summary {
   -webkit-tap-highlight-color: transparent;
 }
 
+.auth-shell {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 20% 15%, rgba(244, 114, 182, 0.2), transparent 30%),
+    radial-gradient(circle at 80% 10%, rgba(160, 149, 255, 0.18), transparent 34%),
+    var(--bg);
+}
+
+.auth-card {
+  display: grid;
+  width: min(440px, 100%);
+  gap: 18px;
+  border: 1px solid var(--border);
+  border-radius: 24px;
+  padding: 32px;
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  box-shadow: var(--shadow);
+}
+
+.auth-card > img {
+  width: 120px;
+}
+
+.auth-brand {
+  display: grid;
+  gap: 8px;
+}
+
+.auth-brand img {
+  width: 132px;
+}
+
+.auth-brand span,
+.auth-card p,
+.auth-card small {
+  color: var(--muted);
+}
+
+.auth-card h1 {
+  margin: 0;
+  font-size: 32px;
+}
+
+.auth-card p {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.auth-form {
+  display: grid;
+  gap: 14px;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 7px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.auth-form input {
+  min-height: 42px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0 12px;
+  background: var(--panel-soft);
+  color: var(--text);
+  outline: none;
+}
+
+.auth-form input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.auth-message {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  background: var(--panel-soft);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.auth-submit,
+.auth-switch {
+  min-height: 42px;
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 850;
+}
+
+.auth-submit {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.auth-switch {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
 .shell {
   display: grid;
   grid-template-columns: 256px minmax(0, 1fr);
@@ -99,29 +206,13 @@ summary {
   margin-top: -21px;
 }
 
-.theme-toggle {
-  display: inline-flex;
-  min-height: 36px;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--panel);
-  color: var(--accent);
-  cursor: pointer;
-  font-size: 13px;
-  font-weight: 700;
-}
-
 .side-nav {
   display: grid;
   gap: 4px;
   padding: 4px 0;
 }
 
-.side-nav button,
-.side-upload-tab {
+.side-nav button {
   display: flex;
   min-height: 34px;
   align-items: center;
@@ -136,48 +227,140 @@ summary {
   font-size: 14px;
 }
 
-.side-upload-tab input {
-  display: none;
-}
-
 .side-nav button:hover,
-.side-nav button.active,
-.side-upload-tab:hover {
+.side-nav button.active {
   background: var(--panel-soft);
 }
 
-.side-upload-selected {
+.account-menu-wrap {
+  position: relative;
+  margin-top: auto;
+}
+
+.user-card {
   display: grid;
-  gap: 8px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 10px;
-  background: var(--panel-soft);
+  width: 100%;
+  grid-template-columns: 32px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-top: 1px solid var(--border);
+  padding: 12px 0 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
 }
 
-.side-upload-selected span {
+.account-chevron {
+  transition: transform 160ms ease;
+}
+
+.account-chevron.open {
+  transform: rotate(180deg);
+}
+
+.user-card-copy {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.user-card strong,
+.account-popover strong {
   overflow: hidden;
-  color: var(--muted);
-  font-size: 12px;
-  font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 13px;
 }
 
-.side-upload-action {
-  min-height: 32px;
-  border: 0;
-  border-radius: 8px;
-  background: var(--accent);
-  color: #fff;
-  cursor: pointer;
+.user-card small,
+.account-popover small {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.account-popover {
+  position: absolute;
+  left: calc(100% + 10px);
+  bottom: 0;
+  z-index: 20;
+  width: 260px;
+  overflow: hidden;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.account-popover-head {
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 12px;
+}
+
+.account-user-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.account-user-copy strong,
+.account-user-copy small {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.account-menu-section {
+  display: grid;
+  gap: 2px;
+  border-top: 1px solid var(--border);
+  padding: 10px;
+}
+
+.account-menu-label {
+  padding: 3px 4px 7px;
+  color: var(--text);
   font-size: 13px;
   font-weight: 800;
 }
 
-.side-upload-action:disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
+.account-menu-section button,
+.account-menu-section a {
+  display: grid;
+  min-height: 34px;
+  grid-template-columns: 18px minmax(0, 1fr) 16px;
+  align-items: center;
+  gap: 9px;
+  border: 0;
+  border-radius: 7px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  text-align: left;
+  text-decoration: none;
+}
+
+.account-menu-section button:hover,
+.account-menu-section a:hover {
+  background: var(--panel-soft);
+}
+
+.account-menu-section a span {
+  display: grid;
+  gap: 1px;
+}
+
+.account-menu-section a small {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .avatar,
@@ -330,6 +513,114 @@ summary {
   overflow: hidden;
   background: var(--panel);
   box-shadow: var(--shadow);
+}
+
+.admin-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.admin-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.admin-note span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.admin-users {
+  display: grid;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.admin-user-row {
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr) 110px 120px auto;
+  align-items: center;
+  gap: 14px;
+  border-bottom: 1px solid var(--border);
+  padding: 14px 16px;
+}
+
+.admin-user-row:last-child {
+  border-bottom: 0;
+}
+
+.admin-user-row div {
+  min-width: 0;
+}
+
+.admin-user-row strong,
+.admin-user-row small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin-user-row small {
+  color: var(--muted);
+}
+
+.user-status,
+.user-role {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 8px;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 850;
+  text-transform: capitalize;
+}
+
+.user-status.approved {
+  color: var(--green);
+  background: rgba(17, 122, 80, 0.08);
+}
+
+.user-status.pending {
+  color: #d49400;
+  background: rgba(212, 148, 0, 0.1);
+}
+
+.user-status.rejected {
+  color: var(--danger);
+  background: rgba(199, 53, 53, 0.1);
+}
+
+.admin-user-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.admin-user-actions button {
+  min-height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0 10px;
+  background: var(--panel-soft);
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.admin-user-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .meeting-date-group {

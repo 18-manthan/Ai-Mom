@@ -3,20 +3,25 @@ import { createRoot } from "react-dom/client";
 import {
   ArrowLeft,
   ArrowUpDown,
+  Check,
+  ChevronUp,
   Copy,
+  Mail,
   FileAudio,
   Info,
   LayoutList,
+  LogOut,
+  Monitor,
   MessageSquare,
   Moon,
   Pencil,
   Radio,
   Search,
   Send,
+  ShieldCheck,
   Sparkles,
   Sun,
   Trash2,
-  UploadCloud,
 } from "lucide-react";
 import iMannLogo from "./assets/iMann.png";
 import "./styles.css";
@@ -54,6 +59,17 @@ type NotesPreset = "short" | "detailed" | "citations" | "actions" | "team_sync" 
 
 type Tab = "chat" | "notes" | "transcript" | "insights";
 type Theme = "dark" | "light";
+type AuthMode = "login" | "signup";
+type AppView = "meetings" | "admin";
+
+type AuthUser = {
+  id: number;
+  name: string;
+  email: string;
+  role: "super_admin" | "user";
+  status: "pending" | "approved" | "rejected";
+  created_at: string;
+};
 
 type ChatMessage = {
   role: "user" | "assistant";
@@ -107,6 +123,7 @@ const SIDEBAR_ITEMS = [
 ];
 
 const GENERATING_NOTE_ID = "__generating_note__";
+const AUTH_TOKEN_KEY = "imann.authToken";
 
 function formatTime(seconds: number) {
   const total = Math.max(0, Math.floor(seconds));
@@ -523,12 +540,22 @@ function detailStatusText(meeting: MeetingDetail) {
 }
 
 function App() {
+  const [authToken, setAuthToken] = useState(() => window.localStorage.getItem(AUTH_TOKEN_KEY) ?? "");
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [authLoading, setAuthLoading] = useState(Boolean(authToken));
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
+  const [authName, setAuthName] = useState("");
+  const [authEmail, setAuthEmail] = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authMessage, setAuthMessage] = useState("");
+  const [appView, setAppView] = useState<AppView>("meetings");
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [adminUsers, setAdminUsers] = useState<AuthUser[]>([]);
+  const [adminLoading, setAdminLoading] = useState(false);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<MeetingDetail | null>(null);
   const [meetingSearch, setMeetingSearch] = useState("");
-  const [file, setFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState("");
   const [backendOnline, setBackendOnline] = useState(true);
   const [renamingMeetingId, setRenamingMeetingId] = useState<number | null>(null);
@@ -546,8 +573,108 @@ function App() {
     return savedTheme === "dark" ? "dark" : "light";
   });
 
+  function setSession(token: string, nextUser: AuthUser) {
+    window.localStorage.setItem(AUTH_TOKEN_KEY, token);
+    setAuthToken(token);
+    setUser(nextUser);
+    setAuthMessage("");
+  }
+
+  function clearSession() {
+    window.localStorage.removeItem(AUTH_TOKEN_KEY);
+    setAuthToken("");
+    setUser(null);
+    setMeetings([]);
+    setDetail(null);
+    setSelectedId(null);
+    setAppView("meetings");
+  }
+
+  async function apiFetch(path: string, options: RequestInit = {}) {
+    const headers = new Headers(options.headers);
+    if (authToken) {
+      headers.set("Authorization", `Bearer ${authToken}`);
+    }
+    const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
+    if (response.status === 401 || response.status === 403) {
+      if (path !== "/api/auth/me") {
+        clearSession();
+      }
+    }
+    return response;
+  }
+
+  async function submitAuth(event: React.FormEvent) {
+    event.preventDefault();
+    setAuthMessage("");
+    const path = authMode === "login" ? "/api/auth/login" : "/api/auth/signup";
+    const body = authMode === "login"
+      ? { email: authEmail, password: authPassword }
+      : { name: authName, email: authEmail, password: authPassword };
+
+    try {
+      const response = await fetch(`${API_BASE}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await response.json();
+      if (!response.ok) {
+        throw new Error(data.detail ?? "Authentication failed");
+      }
+      if (data.token && data.user) {
+        setSession(data.token, data.user as AuthUser);
+        setAuthPassword("");
+        return;
+      }
+      setAuthMode("login");
+      setAuthMessage(data.message ?? "Signup request submitted. Wait for Super Admin approval.");
+      setAuthPassword("");
+    } catch (error) {
+      setAuthMessage(error instanceof Error ? error.message : "Authentication failed");
+    }
+  }
+
+  async function logout() {
+    if (authToken) {
+      await apiFetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
+    }
+    clearSession();
+  }
+
+  async function loadAdminUsers() {
+    setAdminLoading(true);
+    setMessage("");
+    try {
+      const response = await apiFetch("/api/admin/users", { cache: "no-store" });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail ?? "Could not load users");
+      }
+      setAdminUsers((await response.json()) as AuthUser[]);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not load users");
+    } finally {
+      setAdminLoading(false);
+    }
+  }
+
+  async function moderateUser(userId: number, action: "approve" | "reject") {
+    setMessage("");
+    try {
+      const response = await apiFetch(`/api/admin/users/${userId}/${action}`, { method: "POST" });
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail ?? `Could not ${action} user`);
+      }
+      await loadAdminUsers();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : `Could not ${action} user`);
+    }
+  }
+
   async function loadMeetings() {
-    const response = await fetch(`${API_BASE}/api/meetings`, { cache: "no-store" });
+    const response = await apiFetch("/api/meetings", { cache: "no-store" });
     if (!response.ok) {
       throw new Error("Backend is not reachable.");
     }
@@ -557,41 +684,12 @@ function App() {
   }
 
   async function loadDetail(id: number) {
-    const response = await fetch(`${API_BASE}/api/meetings/${id}`, { cache: "no-store" });
+    const response = await apiFetch(`/api/meetings/${id}`, { cache: "no-store" });
     if (!response.ok) {
       throw new Error("Could not load meeting.");
     }
     setBackendOnline(true);
     setDetail((await response.json()) as MeetingDetail);
-  }
-
-  async function upload() {
-    if (!file) return;
-    setUploading(true);
-    setMessage("");
-    const form = new FormData();
-    form.append("file", file);
-
-    try {
-      const response = await fetch(`${API_BASE}/api/meetings`, {
-        method: "POST",
-        body: form,
-      });
-      if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.detail ?? "Upload failed");
-      }
-      const meeting = (await response.json()) as Meeting;
-      setSelectedId(meeting.id);
-      setActiveTab("transcript");
-      setFile(null);
-      await loadMeetings();
-      await loadDetail(meeting.id);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Upload failed");
-    } finally {
-      setUploading(false);
-    }
   }
 
   async function generateSummary(presetOverride?: NotesPreset) {
@@ -602,7 +700,7 @@ function App() {
     setSelectedNoteId(GENERATING_NOTE_ID);
 
     try {
-      const response = await fetch(`${API_BASE}/api/meetings/${detail.id}/summary`, {
+      const response = await apiFetch(`/api/meetings/${detail.id}/summary`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ preset }),
@@ -628,7 +726,7 @@ function App() {
     setMessage("");
 
     try {
-      const response = await fetch(`${API_BASE}/api/meetings/${detail.id}/cleanup`, {
+      const response = await apiFetch(`/api/meetings/${detail.id}/cleanup`, {
         method: "POST",
       });
       if (!response.ok) {
@@ -652,7 +750,7 @@ function App() {
     setChatLoading(true);
 
     try {
-      const response = await fetch(`${API_BASE}/api/meetings/${detail.id}/chat`, {
+      const response = await apiFetch(`/api/meetings/${detail.id}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ question }),
@@ -682,7 +780,7 @@ function App() {
     setMessage("");
 
     try {
-      const response = await fetch(`${API_BASE}/api/meetings/${meeting.id}`, {
+      const response = await apiFetch(`/api/meetings/${meeting.id}`, {
         method: "DELETE",
       });
       if (!response.ok) {
@@ -728,7 +826,7 @@ function App() {
     setMessage("");
 
     try {
-      const response = await fetch(`${API_BASE}/api/meetings/${meetingId}`, {
+      const response = await apiFetch(`/api/meetings/${meetingId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title }),
@@ -750,11 +848,41 @@ function App() {
   }
 
   useEffect(() => {
+    if (!authToken) {
+      setAuthLoading(false);
+      return;
+    }
+
+    fetch(`${API_BASE}/api/auth/me`, {
+      headers: { Authorization: `Bearer ${authToken}` },
+      cache: "no-store",
+    })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error("Session expired");
+        }
+        const data = (await response.json()) as { user: AuthUser };
+        setUser(data.user);
+      })
+      .catch(() => {
+        clearSession();
+      })
+      .finally(() => setAuthLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!user || appView !== "meetings") return;
     loadMeetings().catch(() => {
       setBackendOnline(false);
       setMessage("Backend is not reachable.");
     });
-  }, []);
+  }, [user, appView]);
+
+  useEffect(() => {
+    if (user?.role === "super_admin" && appView === "admin") {
+      loadAdminUsers();
+    }
+  }, [user?.role, appView]);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -762,7 +890,7 @@ function App() {
   }, [theme]);
 
   useEffect(() => {
-    if (selectedId !== null) {
+    if (user && selectedId !== null) {
       setChatMessages([]);
       setChatQuestion("");
       setSelectedNoteId(null);
@@ -771,7 +899,7 @@ function App() {
         setMessage("Could not load meeting. Backend may be stopped.");
       });
     }
-  }, [selectedId]);
+  }, [selectedId, user]);
 
   useEffect(() => {
     if (detail && detail.cleaned_segments.length === 0 && transcriptView === "clean") {
@@ -799,7 +927,7 @@ function App() {
       detail?.cleanup_status === "processing" ||
       detail?.summary_status === "queued" ||
       detail?.summary_status === "processing";
-    if (!active || selectedId === null) return;
+    if (!user || !active || selectedId === null) return;
 
     const timer = window.setInterval(() => {
       loadMeetings().catch(() => {
@@ -812,7 +940,7 @@ function App() {
       });
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [detail?.status, detail?.cleanup_status, detail?.summary_status, selectedId]);
+  }, [detail?.status, detail?.cleanup_status, detail?.summary_status, selectedId, user]);
 
   const canGenerateSummary =
     detail?.status === "completed" &&
@@ -924,6 +1052,69 @@ function App() {
     return groups;
   }, [filteredMeetings]);
 
+  if (authLoading) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-card">
+          <img src={iMannLogo} alt="iMann" />
+          <h1>Loading iMann...</h1>
+        </section>
+      </main>
+    );
+  }
+
+  if (!user) {
+    return (
+      <main className="auth-shell">
+        <section className="auth-card">
+          <div className="auth-brand">
+            <img src={iMannLogo} alt="iMann" />
+            <span>Meeting intelligence workspace</span>
+          </div>
+          <h1>{authMode === "login" ? "Welcome back" : "Request access"}</h1>
+          <p>
+            {authMode === "login"
+              ? "Login to access transcripts, AI notes, and meeting insights."
+              : "Create your account. A Super Admin must approve it before access is enabled."}
+          </p>
+          <form className="auth-form" onSubmit={submitAuth}>
+            {authMode === "signup" && (
+              <label>
+                Name
+                <input value={authName} onChange={(event) => setAuthName(event.target.value)} placeholder="Manthan Chouhan" />
+              </label>
+            )}
+            <label>
+              Email
+              <input value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@company.com" type="email" />
+            </label>
+            <label>
+              Password
+              <input value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="Minimum 8 characters" type="password" />
+            </label>
+            {authMessage && <div className="auth-message">{authMessage}</div>}
+            <button className="auth-submit" type="submit">
+              {authMode === "login" ? "Login" : "Submit signup request"}
+            </button>
+          </form>
+          <button
+            className="auth-switch"
+            type="button"
+            onClick={() => {
+              setAuthMode(authMode === "login" ? "signup" : "login");
+              setAuthMessage("");
+            }}
+          >
+            {authMode === "login" ? "Need access? Sign up" : "Already approved? Login"}
+          </button>
+          <small>First signup becomes Super Admin automatically.</small>
+        </section>
+      </main>
+    );
+  }
+
+  const currentUser = user;
+
   return (
     <main className="shell">
       <aside className="sidebar">
@@ -931,25 +1122,16 @@ function App() {
           <img src={iMannLogo} alt="iMann" />
         </div>
 
-        <button
-          className="theme-toggle"
-          type="button"
-          onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-          aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} mode`}
-        >
-          {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-          <span>{theme === "dark" ? "Light mode" : "Dark mode"}</span>
-        </button>
-
         <nav className="side-nav" aria-label="Main navigation">
           {SIDEBAR_ITEMS.map((item) => {
             const Icon = item.icon;
             return (
               <button
-                className={item.active ? "active" : ""}
+                className={appView === "meetings" ? "active" : ""}
                 type="button"
                 key={item.label}
                 onClick={() => {
+                  setAppView("meetings");
                   setSelectedId(null);
                   setDetail(null);
                   setActiveTab("notes");
@@ -964,25 +1146,75 @@ function App() {
               </button>
             );
           })}
-          <label className="side-upload-tab">
-            <UploadCloud size={17} />
-            <span>Upload Recording</span>
-            <input
-              type="file"
-              accept=".mp3,.wav,.mp4,.m4a,audio/*,video/mp4"
-              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-            />
-          </label>
+          {currentUser.role === "super_admin" && (
+            <button
+              className={appView === "admin" ? "active" : ""}
+              type="button"
+              onClick={() => {
+                setAppView("admin");
+                setSelectedId(null);
+                setDetail(null);
+              }}
+            >
+              <ShieldCheck size={17} />
+              <span>Super Admin</span>
+            </button>
+          )}
         </nav>
 
-        {file && (
-          <div className="side-upload-selected">
-            <span title={file.name}>{file.name}</span>
-            <button className="side-upload-action" disabled={uploading} onClick={upload} type="button">
-              {uploading ? "Uploading..." : "Upload selected file"}
-            </button>
-          </div>
-        )}
+        <div className="account-menu-wrap">
+          {accountMenuOpen && (
+            <div className="account-popover">
+              <div className="account-popover-head">
+                <span className="row-avatar">{speakerInitials(currentUser.name)}</span>
+                <div className="account-user-copy">
+                  <strong>{currentUser.name}</strong>
+                  <small>{currentUser.email}</small>
+                </div>
+              </div>
+
+              <div className="account-menu-section">
+                <span className="account-menu-label">Interface theme</span>
+                <button type="button" onClick={() => setTheme("light")}>
+                  <Sun size={16} />
+                  Light
+                  {theme === "light" && <Check size={15} />}
+                </button>
+                <button type="button" onClick={() => setTheme("dark")}>
+                  <Moon size={16} />
+                  Dark
+                  {theme === "dark" && <Check size={15} />}
+                </button>
+                <button type="button" onClick={() => setTheme(window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")}>
+                  <Monitor size={16} />
+                  Match system preference
+                </button>
+              </div>
+
+              <div className="account-menu-section">
+                <a href="mailto:manthanchouhan2003@gmail.com">
+                  <Mail size={16} />
+                  <span>
+                    Contact Us
+                    <small>+91 900985591</small>
+                  </span>
+                </a>
+                <button type="button" onClick={logout}>
+                  <LogOut size={16} />
+                  Sign out
+                </button>
+              </div>
+            </div>
+          )}
+          <button className="user-card" type="button" onClick={() => setAccountMenuOpen((open) => !open)}>
+            <span className="row-avatar">{speakerInitials(currentUser.name)}</span>
+            <span className="user-card-copy">
+              <strong>{currentUser.name}</strong>
+              <small>{currentUser.email}</small>
+            </span>
+            <ChevronUp className={accountMenuOpen ? "account-chevron open" : "account-chevron"} size={16} />
+          </button>
+        </div>
       </aside>
 
       <div className="creator-credit">
@@ -1005,7 +1237,23 @@ function App() {
           </div>
         )}
 
-        {!detail && (
+        {appView === "admin" && (
+          <>
+            <header className="page-head">
+              <div className="page-title">
+                <ShieldCheck size={18} />
+                <h2>Super Admin</h2>
+              </div>
+              <button className="toolbar-chip" type="button" onClick={loadAdminUsers} disabled={adminLoading}>
+                <ArrowUpDown size={15} />
+                {adminLoading ? "Refreshing..." : "Refresh users"}
+              </button>
+            </header>
+            {message && <p className="error page-error">{message}</p>}
+          </>
+        )}
+
+        {appView === "meetings" && !detail && (
           <>
             <header className="page-head">
               <div className="page-title">
@@ -1033,7 +1281,7 @@ function App() {
           </>
         )}
 
-        {detail && (
+        {appView === "meetings" && detail && (
           <>
             <header className="detail-head">
               <div>
@@ -1150,7 +1398,38 @@ function App() {
         )}
 
         <div className="workspace-scroll">
-          {!detail && (
+          {appView === "admin" && (
+            <section className="admin-panel">
+              <div className="admin-note">
+                <strong>Signup approvals</strong>
+                <span>Pending users cannot access iMann until a Super Admin approves them.</span>
+              </div>
+              <div className="admin-users">
+                {adminUsers.length === 0 && <p className="empty">No users found.</p>}
+                {adminUsers.map((item) => (
+                  <article className="admin-user-row" key={item.id}>
+                    <span className="row-avatar">{speakerInitials(item.name)}</span>
+                    <div>
+                      <strong>{item.name}</strong>
+                      <small>{item.email}</small>
+                    </div>
+                    <span className={`user-status ${item.status}`}>{item.status}</span>
+                    <span className="user-role">{item.role === "super_admin" ? "Super Admin" : "User"}</span>
+                    <div className="admin-user-actions">
+                      <button type="button" disabled={item.status === "approved"} onClick={() => moderateUser(item.id, "approve")}>
+                        Approve
+                      </button>
+                      <button type="button" disabled={item.status === "rejected" || item.role === "super_admin"} onClick={() => moderateUser(item.id, "reject")}>
+                        Reject
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {appView === "meetings" && !detail && (
             <section className="meeting-dashboard">
               {meetings.length === 0 && <p className="empty">No meetings yet.</p>}
               {meetings.length > 0 && filteredMeetings.length === 0 && (
@@ -1239,7 +1518,7 @@ function App() {
             </section>
           )}
 
-          {detail && (
+          {appView === "meetings" && detail && (
             <div className="meeting-detail-shell">
               <div className="meeting-detail-main">
               {activeTab === "chat" && (
