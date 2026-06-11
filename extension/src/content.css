@@ -319,53 +319,63 @@
 
 .mom-dock {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   margin: 0 -12px -12px;
-  padding: 10px 12px;
+  padding: 10px 12px 12px;
   background: rgba(15, 16, 20, 0.78);
 }
 
 .mom-dock-button {
   display: inline-flex;
-  height: 46px;
+  min-width: 0;
+  height: 44px;
   align-items: center;
   justify-content: center;
-  border: 0;
-  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  border-radius: 12px;
   color: #ffffff;
-  background: rgba(0, 0, 0, 0.42);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.055), rgba(255, 255, 255, 0.02)),
+    rgba(0, 0, 0, 0.5);
   cursor: pointer;
   font: inherit;
   font-size: 12px;
   font-weight: 850;
+  line-height: 1;
   text-decoration: none;
-}
-
-.mom-dock-button.start {
-  color: #7fffc2;
+  transition:
+    border-color 160ms ease,
+    background 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
 }
 
 .mom-dock-button.pause {
   color: #fbbf24;
 }
 
-.mom-dock-button.end {
-  color: #ffb4c6;
-}
-
 .mom-dock-button.open {
   color: #b9a7ff;
+}
+
+.mom-dock-button:not(:disabled):hover {
+  border-color: rgba(185, 167, 255, 0.42);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.035)),
+    rgba(0, 0, 0, 0.58);
+  transform: translateY(-1px);
 }
 
 .mom-dock-button:disabled {
   cursor: not-allowed;
   color: rgba(255, 255, 255, 0.28);
+  transform: none;
 }
 
 .mom-mini {
   display: grid;
-  grid-template-columns: 10px minmax(0, 1fr) auto auto auto;
+  grid-template-columns: 10px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 10px;
   min-height: 58px;

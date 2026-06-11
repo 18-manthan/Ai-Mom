@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const SCRIPT_VERSION = "0.1.19";
+  const SCRIPT_VERSION = "0.1.23";
 
   if (window.__MOM_LIVE_CAPTURE_LOADED__ && window.__MOM_LIVE_CAPTURE_VERSION__ === SCRIPT_VERSION) {
     return;
@@ -27,6 +27,10 @@
   const MAX_CANDIDATES_PER_SCAN = 4;
   const NO_CAPTION_WARNING_MS = 5000;
   const NO_CAPTION_RECOVERY_MS = 8000;
+  const AUTO_CAPTURE_ENABLED = true;
+  const AUTO_ENABLE_CAPTIONS = true;
+  const AUTO_CAPTURE_INTERVAL_MS = 2000;
+  const MEETING_END_GRACE_MS = 5000;
 
   const state = {
     apiBase: window.localStorage.getItem("mom.apiBase") || DEFAULT_API_BASE,
@@ -40,6 +44,8 @@
     observer: null,
     scanTimer: null,
     retryTimer: null,
+    autoMonitorTimer: null,
+    autoEndTimer: null,
     segmentControllers: new Set(),
     nodeIds: new WeakMap(),
     nextNodeId: 1,
@@ -51,10 +57,30 @@
     lastRecoveryAt: 0,
     nodeSnapshots: new WeakMap(),
     nodeSpeakers: new WeakMap(),
+    autoCaptionAttempted: false,
+    autoStartInFlight: false,
+    restoreInFlight: false,
+    meetingWasActive: false,
+    userPaused: false,
+    userEndedSession: false,
     isMinimized: window.localStorage.getItem(PANEL_MINIMIZED_KEY) === "true",
   };
 
+  let nativeCaptionStyle = null;
+  let teamsMenuStyle = null;
+
   const ui = createPanel();
+  startAutoCaptureMonitor();
+  window.addEventListener("beforeunload", () => {
+    if (state.autoMonitorTimer) {
+      window.clearInterval(state.autoMonitorTimer);
+    }
+    if (state.autoEndTimer) {
+      window.clearTimeout(state.autoEndTimer);
+    }
+    showNativeCaptions();
+    showTeamsMenus();
+  });
   window.setInterval(render, 1000);
   render();
   restoreActiveSession().catch((error) => {
@@ -91,21 +117,19 @@
           <div class="mom-transcript" data-role="transcript">
             <div class="mom-transcript-empty">
               <strong>Live captions will appear here.</strong>
-              <span>Turn on ${platformLabel()} captions and press Start.</span>
+              <span>Join a meeting. iMann starts transcription automatically.</span>
             </div>
           </div>
         </div>
 
-        <div class="mom-status" data-role="status">Start capture after captions are enabled.</div>
+        <div class="mom-status" data-role="status">Waiting for an active ${platformLabel()} call...</div>
 
         <div class="mom-bottom-meta">
           <span data-role="count">0 sent · 0 queued</span>
         </div>
 
         <div class="mom-dock">
-          <button class="mom-dock-button start" type="button" data-action="start">Start</button>
           <button class="mom-dock-button pause" type="button" data-action="pause">Pause</button>
-          <button class="mom-dock-button end" type="button" data-action="end">End</button>
           <a class="mom-dock-button open" href="${DASHBOARD_URL}" target="_blank" rel="noreferrer">Open</a>
         </div>
       </div>
@@ -117,7 +141,6 @@
         </div>
         <span class="mom-mini-timer" data-role="mini-timer">00:00</span>
         <button class="mom-icon-button" type="button" data-action="expand" title="Expand">↗</button>
-        <button class="mom-icon-button danger" type="button" data-action="mini-end" title="End">×</button>
       </div>
     `;
 
@@ -134,10 +157,7 @@
       renderStatus("Backend updated.");
     });
 
-    root.querySelector('[data-action="start"]').addEventListener("click", startCapture);
-    root.querySelector('[data-action="pause"]').addEventListener("click", pauseCapture);
-    root.querySelector('[data-action="end"]').addEventListener("click", endCapture);
-    root.querySelector('[data-action="mini-end"]').addEventListener("click", endCapture);
+    root.querySelector('[data-action="pause"]').addEventListener("click", togglePauseResume);
     root.querySelector('[data-action="minimize"]').addEventListener("click", () => setMinimized(true));
     root.querySelector('[data-action="expand"]').addEventListener("click", () => setMinimized(false));
 
@@ -215,24 +235,85 @@
     window.addEventListener("resize", () => restorePanelPosition(root));
   }
 
-  async function startCapture() {
-    if (state.isCapturing || state.isEnding) {
+  function startAutoCaptureMonitor() {
+    if (!AUTO_CAPTURE_ENABLED || state.autoMonitorTimer) {
       return;
     }
 
+    const tick = () => {
+      const active = isMeetingActive();
+
+      if (active) {
+        state.meetingWasActive = true;
+        if (state.autoEndTimer) {
+          window.clearTimeout(state.autoEndTimer);
+          state.autoEndTimer = null;
+        }
+        if (!state.meetingId && !state.autoStartInFlight && !state.userPaused && !state.userEndedSession && !state.isEnding) {
+          const session = readActiveSession();
+          if (sessionMatchesCurrentPage(session) && !state.restoreInFlight) {
+            restoreActiveSession().catch((error) => {
+              renderStatus(errorMessage(error));
+              render();
+            });
+            return;
+          }
+          startCapture({ automatic: true }).catch((error) => {
+            renderStatus(errorMessage(error));
+            render();
+          });
+        }
+        return;
+      }
+
+      if (!active && state.meetingWasActive) {
+        state.meetingWasActive = false;
+        state.userPaused = false;
+        state.userEndedSession = false;
+        if (state.meetingId && !state.isEnding && !state.autoEndTimer) {
+          renderStatus("Meeting ended. Finalizing transcription...");
+          render();
+          state.autoEndTimer = window.setTimeout(() => {
+            state.autoEndTimer = null;
+            if (!isMeetingActive() && state.meetingId) {
+              endCapture({ automatic: true }).catch((error) => {
+                renderStatus(errorMessage(error));
+                render();
+              });
+            }
+          }, MEETING_END_GRACE_MS);
+        }
+      }
+    };
+
+    state.autoMonitorTimer = window.setInterval(tick, AUTO_CAPTURE_INTERVAL_MS);
+    window.setTimeout(tick, 800);
+  }
+
+  async function startCapture(options = {}) {
+    if (state.isCapturing || state.isEnding || state.autoStartInFlight) {
+      return;
+    }
+    if (options.automatic && state.userEndedSession) {
+      return;
+    }
+
+    state.autoStartInFlight = true;
     try {
       if (state.meetingId) {
         state.isCapturing = true;
         state.isEnding = false;
+        state.userPaused = false;
         state.captureStartedAt = state.captureStartedAt || Date.now();
         startObserver();
+        ensurePlatformCaptions().catch((error) => renderStatus(errorMessage(error)));
         persistActiveSession();
         renderStatus("Resumed capture for the active iMann meeting.");
         render();
         return;
       }
 
-      renderStatus("Connecting to iMann backend...");
+      renderStatus(options.automatic ? "Meeting detected. Starting iMann transcription..." : "Connecting to iMann backend...");
       const meeting = await postJson("/api/live-meetings", {
         title: meetingTitle(),
         source: platformSource(),
@@ -244,6 +325,8 @@
       state.captureStartedAt = Date.now();
       state.isCapturing = true;
       state.isEnding = false;
+      state.userPaused = false;
+      state.userEndedSession = false;
       state.sentCount = 0;
       state.activeCaptions.clear();
       state.pendingSegments = [];
@@ -251,27 +334,40 @@
       state.isConnected = true;
 
       startObserver();
+      ensurePlatformCaptions().catch((error) => renderStatus(errorMessage(error)));
       persistActiveSession();
-      renderStatus(`Capturing. Keep ${platformLabel()} captions turned on.`);
+      renderStatus(`Capturing. iMann will try to keep ${platformLabel()} captions hidden.`);
       render();
     } catch (error) {
       renderStatus(errorMessage(error));
       render();
+    } finally {
+      state.autoStartInFlight = false;
     }
   }
 
-  function pauseCapture() {
-    if (!state.meetingId || !state.isCapturing) {
+  function togglePauseResume() {
+    if (!state.meetingId || state.isEnding) {
       return;
     }
+
+    if (!state.isCapturing) {
+      startCapture({ automatic: false }).catch((error) => {
+        renderStatus(errorMessage(error));
+        render();
+      });
+      return;
+    }
+
     stopObserver();
     state.isCapturing = false;
+    state.userPaused = true;
     persistActiveSession();
     renderStatus("Paused. Click Resume to continue this transcription session.");
     render();
   }
 
-  async function endCapture() {
+  async function endCapture(options = {}) {
     if (state.isEnding) {
       renderStatus("Ending is already in progress...");
       render();
@@ -285,6 +381,11 @@
       state.isCapturing = false;
       state.isConnected = false;
       state.isEnding = false;
+      state.autoCaptionAttempted = false;
+      state.userPaused = false;
+      state.userEndedSession = !options.automatic;
+      showNativeCaptions();
+      showTeamsMenus();
       clearActiveSession();
       render();
       return;
@@ -296,6 +397,8 @@
     stopRetryTimer();
     state.pendingScan = false;
     state.isCapturing = false;
+    state.userPaused = false;
+    state.userEndedSession = !options.automatic;
     renderStatus("Ending capture...");
     render();
 
@@ -313,12 +416,31 @@
       state.isEnding = false;
       state.pendingSegments = [];
       state.previewSegments = [];
+      state.autoCaptionAttempted = false;
+      state.userPaused = false;
+      showNativeCaptions();
+      showTeamsMenus();
       clearActiveSession();
-      renderStatus("Finished. Open iMann to generate notes.");
+      renderStatus(options.automatic ? "Meeting ended. Transcription saved." : "Finished. Open iMann to generate notes.");
     } catch (error) {
       state.isEnding = false;
       persistActiveSession();
-      renderStatus(`${errorMessage(error)} Click End again after the backend is reachable.`);
+      if (options.automatic) {
+        renderStatus(`${errorMessage(error)} Retrying final save shortly...`);
+        if (!state.autoEndTimer) {
+          state.autoEndTimer = window.setTimeout(() => {
+            state.autoEndTimer = null;
+            if (!isMeetingActive() && state.meetingId) {
+              endCapture({ automatic: true }).catch((retryError) => {
+                renderStatus(errorMessage(retryError));
+                render();
+              });
+            }
+          }, MEETING_END_GRACE_MS);
+        }
+      } else {
+        renderStatus(errorMessage(error));
+      }
     } finally {
       render();
     }
@@ -400,6 +522,32 @@
     }
   }
 
+  async function ensurePlatformCaptions() {
+    if (!AUTO_ENABLE_CAPTIONS || state.autoCaptionAttempted) {
+      return;
+    }
+    state.autoCaptionAttempted = true;
+
+    if (state.platform === "microsoft_teams") {
+      const enabled = await autoEnableTeamsCaptions();
+      renderStatus(
+        enabled
+          ? "Capturing Teams captions. Native captions are hidden from view."
+          : "Capturing. If Teams captions do not appear, enable live captions once manually.",
+      );
+      render();
+      return;
+    }
+
+    const enabled = await autoEnableMeetCaptions();
+    renderStatus(
+      enabled
+        ? "Capturing Google Meet captions. Native captions are hidden from view."
+        : "Capturing. If Meet captions do not appear, enable captions once manually.",
+    );
+    render();
+  }
+
   function recoverCaptionScanner() {
     state.lastRecoveryAt = Date.now();
     state.nodeSnapshots = new WeakMap();
@@ -415,7 +563,298 @@
     render();
   }
 
+  function findPlatformCaptionCandidates() {
+    if (state.platform === "microsoft_teams") {
+      return findTeamsCaptionCandidates();
+    }
+    if (state.platform === "google_meet") {
+      return findMeetCaptionCandidates();
+    }
+    return [];
+  }
+
+  function findMeetCaptionCandidates() {
+    const candidates = [];
+    const roots = Array.from(document.querySelectorAll('[role="region"][aria-label="Captions"], [aria-label="Captions"]'));
+
+    for (const root of roots) {
+      const rows = Array.from(root.querySelectorAll(".nMcdL"));
+      if (rows.length > 0) {
+        for (const row of rows) {
+          const speaker = normalizeSpeakerName(row.querySelector(".NWpY1d")?.textContent || "") || "Speaker";
+          const text = cleanCaptionText(row.querySelector(".ygicle")?.textContent || "");
+          if (!text || !looksLikeCaptionText(text)) {
+            continue;
+          }
+          candidates.push({
+            node: row,
+            speaker,
+            text,
+            score: 220,
+          });
+        }
+        continue;
+      }
+
+      const parsed = parseCaptionText(root.innerText || root.textContent || "", root);
+      if (parsed && !isRejectedCaption(parsed) && looksLikeCaptionText(parsed.text)) {
+        candidates.push({
+          node: root,
+          speaker: parsed.speaker,
+          text: parsed.text,
+          score: 180,
+        });
+      }
+    }
+
+    return candidates;
+  }
+
+  function findTeamsCaptionCandidates() {
+    const candidates = [];
+    const captions = Array.from(document.querySelectorAll('[data-tid="closed-caption-text"]'));
+
+    for (const caption of captions.slice(-8)) {
+      const text = cleanCaptionText(caption.textContent || "");
+      if (!text || !looksLikeCaptionText(text)) {
+        continue;
+      }
+      const message = caption.closest(".fui-ChatMessageCompact, [role='listitem'], [role='group']") || caption.parentElement;
+      const speaker =
+        normalizeSpeakerName(message?.querySelector?.('[data-tid="author"]')?.textContent || "") ||
+        extractSpeakerFromCaptionNode(caption, text) ||
+        "Speaker";
+      candidates.push({
+        node: caption,
+        speaker,
+        text,
+        score: 220,
+      });
+    }
+
+    if (candidates.length > 0) {
+      return candidates;
+    }
+
+    const roots = new Set();
+    document.querySelectorAll('[role="log"], [aria-live="polite"], [aria-live="assertive"]').forEach((node) => roots.add(node));
+    document.querySelectorAll('[data-tid*="caption" i], [class*="caption" i]').forEach((node) => roots.add(node));
+
+    for (const root of roots) {
+      const parsed = parseCaptionText(root.innerText || root.textContent || "", root);
+      if (parsed && !isRejectedCaption(parsed) && looksLikeCaptionText(parsed.text)) {
+        candidates.push({
+          node: root,
+          speaker: parsed.speaker,
+          text: parsed.text,
+          score: 160,
+        });
+      }
+    }
+
+    return candidates;
+  }
+
+  async function autoEnableMeetCaptions() {
+    const enabledButton = findButtonByLabelOrText(["turn off captions", "captions are on"]);
+    if (enabledButton) {
+      hideNativeCaptions();
+      return true;
+    }
+
+    const button = await waitForElement(() => findButtonByLabelOrText(["turn on captions"]), 10000);
+    if (!button) {
+      return false;
+    }
+
+    button.click();
+    await sleep(900);
+    hideNativeCaptions();
+    return true;
+  }
+
+  async function autoEnableTeamsCaptions() {
+    if (document.querySelector('[data-tid="closed-caption-text"]')) {
+      hideNativeCaptions();
+      return true;
+    }
+
+    const directCaptionButton = findButtonByLabelOrText(["turn on live captions", "turn on captions", "live captions"]);
+    if (directCaptionButton && !buttonText(directCaptionButton).includes("turn off")) {
+      directCaptionButton.click();
+      await sleep(900);
+      hideNativeCaptions();
+      return true;
+    }
+
+    const moreButton = findTeamsMoreButton();
+    if (!moreButton) {
+      return false;
+    }
+
+    hideTeamsMenus();
+    moreButton.click();
+    await sleep(900);
+
+    const languageAndSpeech = findButtonByLabelOrText(["language and speech", "language & speech", "speech"]);
+    if (!languageAndSpeech) {
+      showTeamsMenus();
+      return false;
+    }
+
+    languageAndSpeech.click();
+    const captionButton = await waitForElement(() => findTeamsLiveCaptionButton(), 10000);
+    if (!captionButton) {
+      showTeamsMenus();
+      return false;
+    }
+
+    const text = buttonText(captionButton);
+    if (!text.includes("turn off")) {
+      captionButton.click();
+    }
+
+    await sleep(1000);
+    hideNativeCaptions();
+    showTeamsMenus();
+    return true;
+  }
+
+  function hideNativeCaptions() {
+    if (nativeCaptionStyle) {
+      return;
+    }
+
+    nativeCaptionStyle = document.createElement("style");
+    nativeCaptionStyle.id = "mom-hide-native-captions";
+
+    if (state.platform === "microsoft_teams") {
+      nativeCaptionStyle.textContent = `
+        [role="log"],
+        [data-tid*="caption" i],
+        [class*="caption" i] {
+          position: fixed !important;
+          top: -9999px !important;
+          left: -9999px !important;
+          width: 1px !important;
+          height: 1px !important;
+          max-width: 1px !important;
+          max-height: 1px !important;
+          overflow: hidden !important;
+          pointer-events: none !important;
+        }
+      `;
+    } else {
+      nativeCaptionStyle.textContent = `
+        [role="region"][aria-label="Captions"] {
+          position: fixed !important;
+          top: -9999px !important;
+          left: -9999px !important;
+          width: 1px !important;
+          height: 1px !important;
+          max-width: 1px !important;
+          max-height: 1px !important;
+          overflow: hidden !important;
+          pointer-events: none !important;
+        }
+      `;
+    }
+
+    document.head.appendChild(nativeCaptionStyle);
+  }
+
+  function showNativeCaptions() {
+    nativeCaptionStyle?.remove();
+    nativeCaptionStyle = null;
+  }
+
+  function hideTeamsMenus() {
+    if (teamsMenuStyle) {
+      return;
+    }
+    teamsMenuStyle = document.createElement("style");
+    teamsMenuStyle.id = "mom-hide-teams-caption-menu";
+    teamsMenuStyle.textContent = `
+      .fui-MenuPopover,
+      [data-popover-open="true"] {
+        position: fixed !important;
+        left: -10000px !important;
+        top: -10000px !important;
+      }
+    `;
+    document.head.appendChild(teamsMenuStyle);
+  }
+
+  function showTeamsMenus() {
+    teamsMenuStyle?.remove();
+    teamsMenuStyle = null;
+  }
+
+  function findTeamsMoreButton() {
+    return (
+      document.querySelector("#callingButtons-showMoreBtn") ||
+      findButtonByLabelOrText(["more actions", "more options", "more"])
+    );
+  }
+
+  function findTeamsLiveCaptionButton() {
+    return (
+      document.querySelector('[data-inp="closed-captions-button"]') ||
+      findButtonByLabelOrText(["turn on live captions", "turn off live captions", "turn on captions", "turn off captions", "live captions"])
+    );
+  }
+
+  function isMeetingActive() {
+    if (state.platform === "microsoft_teams") {
+      return Boolean(
+        document.querySelector('[data-tid="call-controls"]') ||
+          document.querySelector("#callingButtons-showMoreBtn") ||
+          findButtonByLabelOrText(["leave"])
+      );
+    }
+
+    return Boolean(
+      findButtonByLabelOrText(["leave call", "leave meeting"])
+    );
+  }
+
+  function findButtonByLabelOrText(needles) {
+    const normalizedNeedles = needles.map((needle) => needle.toLowerCase());
+    const elements = Array.from(document.querySelectorAll('button, [role="button"], [role="menuitem"]'));
+    return elements.find((element) => {
+      const text = buttonText(element);
+      return normalizedNeedles.some((needle) => text.includes(needle));
+    }) || null;
+  }
+
+  function buttonText(element) {
+    return normalizeText(
+      `${element?.getAttribute?.("aria-label") || ""} ${element?.getAttribute?.("title") || ""} ${element?.textContent || ""}`,
+    ).toLowerCase();
+  }
+
+  async function waitForElement(resolveElement, timeoutMs) {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const element = resolveElement();
+      if (element) {
+        return element;
+      }
+      await sleep(300);
+    }
+    return null;
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
   function findCaptionCandidates() {
+    const platformCandidates = findPlatformCaptionCandidates();
+    if (platformCandidates.length > 0) {
+      return uniqueCaptionCandidates(platformCandidates).slice(0, MAX_CANDIDATES_PER_SCAN);
+    }
+
     const selectors = [
       '[aria-live="polite"]',
       '[aria-live="assertive"]',
@@ -644,15 +1083,19 @@
 
   async function restoreActiveSession() {
     const session = readActiveSession();
-    if (!session?.meetingId) {
+    if (!sessionMatchesCurrentPage(session)) {
       return;
     }
-    if (session.platform && session.platform !== state.platform) {
+    if (!isMeetingActive()) {
+      renderStatus(`Waiting for an active ${platformLabel()} call. iMann will start after you join.`);
+      render();
       return;
     }
-    if (session.meetingCode && state.meetingCode && session.meetingCode !== state.meetingCode) {
+    if (state.restoreInFlight) {
       return;
     }
+
+    state.restoreInFlight = true;
 
     state.apiBase = normalizeApiBase(session.apiBase || state.apiBase);
     state.meetingId = session.meetingId;
@@ -682,6 +1125,7 @@
       state.isConnected = true;
       state.isEnding = false;
       startObserver();
+      ensurePlatformCaptions().catch((error) => renderStatus(errorMessage(error)));
       renderStatus("Reconnected to the active MOM live meeting.");
     } catch (error) {
       if (error?.status === 404) {
@@ -701,9 +1145,23 @@
       state.isEnding = false;
       persistActiveSession();
       renderStatus("iMann backend is not reachable. Click Resume when it is back.");
+    } finally {
+      state.restoreInFlight = false;
+      render();
     }
+  }
 
-    render();
+  function sessionMatchesCurrentPage(session) {
+    if (!session?.meetingId) {
+      return false;
+    }
+    if (session.platform && session.platform !== state.platform) {
+      return false;
+    }
+    if (session.meetingCode && state.meetingCode && session.meetingCode !== state.meetingCode) {
+      return false;
+    }
+    return true;
   }
 
   function readActiveSession() {
@@ -1869,8 +2327,11 @@
     }
     if (
       host === "teams.microsoft.com" ||
+      host.endsWith(".teams.microsoft.com") ||
       host === "teams.cloud.microsoft" ||
-      host === "teams.live.com"
+      host.endsWith(".teams.cloud.microsoft") ||
+      host === "teams.live.com" ||
+      host.endsWith(".teams.live.com")
     ) {
       return "microsoft_teams";
     }
@@ -1934,9 +2395,7 @@
 
     const statePill = ui.querySelector('[data-role="state"]');
     const count = ui.querySelector('[data-role="count"]');
-    const start = ui.querySelector('[data-action="start"]');
     const pause = ui.querySelector('[data-action="pause"]');
-    const end = ui.querySelector('[data-action="end"]');
     const apiInput = ui.querySelector("#mom-api-base");
     const transcript = ui.querySelector('[data-role="transcript"]');
     const timer = ui.querySelector('[data-role="timer"]');
@@ -1961,11 +2420,8 @@
     statePill.textContent = stateText;
     statePill.dataset.state = state.isCapturing ? "live" : hasActiveMeeting ? "paused" : "idle";
     count.textContent = `${state.sentCount} sent · ${state.pendingSegments.length} queued`;
-    start.textContent = hasActiveMeeting && !state.isCapturing ? "Resume" : "Start";
-    start.disabled = state.isCapturing || state.isEnding;
-    pause.disabled = !state.isCapturing || state.isEnding;
-    end.disabled = !hasActiveMeeting || state.isEnding;
-    end.textContent = state.isEnding ? "Ending..." : "End";
+    pause.textContent = hasActiveMeeting && !state.isCapturing ? "Resume" : "Pause";
+    pause.disabled = !hasActiveMeeting || state.isEnding;
     apiInput.disabled = hasActiveMeeting;
     timer.textContent = elapsed;
     recordDot.dataset.state = state.isCapturing ? "live" : hasActiveMeeting ? "paused" : "idle";
