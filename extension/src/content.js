@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const SCRIPT_VERSION = "0.1.23";
+  const SCRIPT_VERSION = "0.1.26";
 
   if (window.__MOM_LIVE_CAPTURE_LOADED__ && window.__MOM_LIVE_CAPTURE_VERSION__ === SCRIPT_VERSION) {
     return;
@@ -91,6 +91,7 @@
   function createPanel() {
     const root = document.createElement("div");
     root.id = "mom-live-capture";
+    root.dataset.visible = shouldShowPanel() ? "true" : "false";
     root.innerHTML = `
       <div class="mom-panel">
         <div class="mom-head" data-drag-handle="true">
@@ -635,24 +636,7 @@
     if (candidates.length > 0) {
       return candidates;
     }
-
-    const roots = new Set();
-    document.querySelectorAll('[role="log"], [aria-live="polite"], [aria-live="assertive"]').forEach((node) => roots.add(node));
-    document.querySelectorAll('[data-tid*="caption" i], [class*="caption" i]').forEach((node) => roots.add(node));
-
-    for (const root of roots) {
-      const parsed = parseCaptionText(root.innerText || root.textContent || "", root);
-      if (parsed && !isRejectedCaption(parsed) && looksLikeCaptionText(parsed.text)) {
-        candidates.push({
-          node: root,
-          speaker: parsed.speaker,
-          text: parsed.text,
-          score: 160,
-        });
-      }
-    }
-
-    return candidates;
+    return [];
   }
 
   async function autoEnableMeetCaptions() {
@@ -809,13 +793,52 @@
       return Boolean(
         document.querySelector('[data-tid="call-controls"]') ||
           document.querySelector("#callingButtons-showMoreBtn") ||
-          findButtonByLabelOrText(["leave"])
+          findButtonByLabelOrText(["leave call", "leave meeting", "hang up", "end call"])
       );
     }
 
     return Boolean(
       findButtonByLabelOrText(["leave call", "leave meeting"])
     );
+  }
+
+  function shouldShowPanel() {
+    if (state.platform !== "microsoft_teams") {
+      return true;
+    }
+    return Boolean(
+      state.meetingId ||
+        state.isEnding ||
+        state.autoStartInFlight ||
+        isMeetingActive() ||
+        isTeamsIncomingCallVisible()
+    );
+  }
+
+  function isTeamsIncomingCallVisible() {
+    if (
+      findButtonByLabelOrText([
+        "accept call",
+        "accept with audio",
+        "accept with video",
+        "answer call",
+        "decline call",
+        "reject call",
+      ])
+    ) {
+      return true;
+    }
+
+    if (!findTextInVisibleBody(["incoming call", "is calling", "calling you", "wants you to join", "calling..."])) {
+      return false;
+    }
+
+    return Boolean(findButtonByLabelOrText(["accept", "answer", "decline", "join call", "join now"]));
+  }
+
+  function findTextInVisibleBody(needles) {
+    const text = normalizeText(document.body?.innerText || "").toLowerCase();
+    return needles.some((needle) => text.includes(needle));
   }
 
   function findButtonByLabelOrText(needles) {
@@ -853,6 +876,9 @@
     const platformCandidates = findPlatformCaptionCandidates();
     if (platformCandidates.length > 0) {
       return uniqueCaptionCandidates(platformCandidates).slice(0, MAX_CANDIDATES_PER_SCAN);
+    }
+    if (state.platform === "microsoft_teams") {
+      return [];
     }
 
     const selectors = [
@@ -2099,6 +2125,13 @@
       "host controls",
       "participants",
       "domain_disabled",
+      "calling...",
+      "leaving...",
+      "have left the call",
+      "meeting with ",
+      "https://",
+      "http://",
+      "www.",
     ];
     return rejected.some((item) => lower.includes(item));
   }
@@ -2391,6 +2424,7 @@
   }
 
   function render() {
+    ui.dataset.visible = shouldShowPanel() ? "true" : "false";
     ui.dataset.minimized = state.isMinimized ? "true" : "false";
 
     const statePill = ui.querySelector('[data-role="state"]');

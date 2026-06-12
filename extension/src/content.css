@@ -15,6 +15,10 @@
   box-sizing: border-box;
 }
 
+#mom-live-capture[data-visible="false"] {
+  display: none;
+}
+
 #mom-live-capture[data-minimized="true"] {
   width: 286px;
 }
