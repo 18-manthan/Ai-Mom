@@ -8,6 +8,7 @@ ENV_FILE = PROJECT_ROOT / ".env"
 
 
 class Settings(BaseSettings):
+    auth_enabled: bool = False
     database_url: str = "sqlite:///./backend/mom.db"
     upload_dir: Path = Path("backend/uploads")
     transcript_dir: Path = Path("backend/transcripts")

@@ -60,7 +60,7 @@ TRANSCRIPT_DIR=backend/transcripts
 uvicorn backend.app.main:app --reload
 ```
 
-Backend runs on `http://localhost:8000`.
+Backend runs on `http://localhost:8080`.
 
 ## Run Frontend
 
@@ -70,7 +70,7 @@ npm install
 npm run dev
 ```
 
-Frontend runs on `http://localhost:5173`.
+Frontend runs on `http://localhost:5000`.
 
 ## Run Both
 
@@ -78,12 +78,12 @@ Frontend runs on `http://localhost:5173`.
 ./start.sh
 ```
 
-This starts the backend and frontend, then opens the UI at `http://127.0.0.1:5173`.
+This starts the backend and frontend, then opens the UI at `http://127.0.0.1:5000`.
 
 Optional overrides:
 
 ```bash
-BACKEND_PORT=8001 FRONTEND_PORT=5174 ./start.sh
+BACKEND_PORT=8081 FRONTEND_PORT=5001 ./start.sh
 OPEN_UI=false ./start.sh
 ```
 
@@ -91,12 +91,14 @@ OPEN_UI=false ./start.sh
 
 iMann includes lightweight built-in authentication for deployment:
 
+- Authentication is disabled by default for local development.
+- Set `AUTH_ENABLED=true VITE_AUTH_ENABLED=true` when you want to enable login/signup again.
 - First signup becomes the approved **Super Admin** automatically.
 - Later signups are created as **pending**.
 - Pending users cannot login until the Super Admin approves them.
 - Super Admin can approve or reject users from the **Super Admin** page in the dashboard.
 
-The dashboard APIs require login. The browser extension live-capture endpoints remain available so Google Meet and Microsoft Teams caption capture can continue working from meeting pages.
+When authentication is enabled, dashboard APIs require login. The browser extension live-capture endpoints remain available so Google Meet and Microsoft Teams caption capture can continue working from meeting pages.
 
 ## Live Capture
 

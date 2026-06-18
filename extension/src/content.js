@@ -1,7 +1,7 @@
 (function () {
   "use strict";
 
-  const SCRIPT_VERSION = "0.1.26";
+  const SCRIPT_VERSION = "0.1.27";
 
   if (window.__MOM_LIVE_CAPTURE_LOADED__ && window.__MOM_LIVE_CAPTURE_VERSION__ === SCRIPT_VERSION) {
     return;
@@ -12,8 +12,8 @@
   window.__MOM_LIVE_CAPTURE_LOADED__ = true;
   window.__MOM_LIVE_CAPTURE_VERSION__ = SCRIPT_VERSION;
 
-  const DEFAULT_API_BASE = "http://127.0.0.1:8000";
-  const DASHBOARD_URL = "http://127.0.0.1:5173";
+  const DEFAULT_API_BASE = "http://127.0.0.1:8080";
+  const DASHBOARD_URL = "http://127.0.0.1:5000";
   const SCAN_INTERVAL_MS = 900;
   const MAX_TEXT_LENGTH = 1000000;
   const CAPTION_TEXT_WINDOW = 500000;

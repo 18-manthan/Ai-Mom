@@ -26,7 +26,7 @@ import {
 import iMannLogo from "./assets/iMann.png";
 import "./styles.css";
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8000";
+const API_BASE = import.meta.env.VITE_API_BASE ?? "http://127.0.0.1:8080";
 
 type Meeting = {
   id: number;
@@ -124,6 +124,15 @@ const SIDEBAR_ITEMS = [
 
 const GENERATING_NOTE_ID = "__generating_note__";
 const AUTH_TOKEN_KEY = "imann.authToken";
+const AUTH_ENABLED = import.meta.env.VITE_AUTH_ENABLED === "true";
+const DEV_USER: AuthUser = {
+  id: 0,
+  name: "Manthan Chouhan",
+  email: "manthanchouhan2003@gmail.com",
+  role: "user",
+  status: "approved",
+  created_at: new Date().toISOString(),
+};
 
 function formatTime(seconds: number) {
   const total = Math.max(0, Math.floor(seconds));
@@ -308,14 +317,41 @@ function isValidParticipantName(value: string) {
     "what",
     "you",
   ]);
+  const badNameWords = new Set([
+    "because",
+    "can",
+    "could",
+    "did",
+    "do",
+    "does",
+    "doing",
+    "done",
+    "know",
+    "said",
+    "say",
+    "should",
+    "that",
+    "that's",
+    "thats",
+    "thing",
+    "things",
+    "think",
+    "want",
+    "wants",
+    "why",
+    "would",
+  ]);
 
   if (!name || lower === "speaker" || lower === "you" || lower === "english" || lower.startsWith("language ")) {
+    return false;
+  }
+  if (/[,!?]/.test(name) || !/^[A-Za-z0-9 .&'-]+$/.test(name)) {
     return false;
   }
   if (words.length < 2 || words.length > 5) {
     return false;
   }
-  if (badStarts.has(words[0])) {
+  if (badStarts.has(words[0]) || words.some((word) => badNameWords.has(word))) {
     return false;
   }
   return /[a-z]/i.test(name);
@@ -541,8 +577,8 @@ function detailStatusText(meeting: MeetingDetail) {
 
 function App() {
   const [authToken, setAuthToken] = useState(() => window.localStorage.getItem(AUTH_TOKEN_KEY) ?? "");
-  const [user, setUser] = useState<AuthUser | null>(null);
-  const [authLoading, setAuthLoading] = useState(Boolean(authToken));
+  const [user, setUser] = useState<AuthUser | null>(() => (AUTH_ENABLED ? null : DEV_USER));
+  const [authLoading, setAuthLoading] = useState(AUTH_ENABLED && Boolean(authToken));
   const [authMode, setAuthMode] = useState<AuthMode>("login");
   const [authName, setAuthName] = useState("");
   const [authEmail, setAuthEmail] = useState("");
@@ -592,11 +628,11 @@ function App() {
 
   async function apiFetch(path: string, options: RequestInit = {}) {
     const headers = new Headers(options.headers);
-    if (authToken) {
+    if (AUTH_ENABLED && authToken) {
       headers.set("Authorization", `Bearer ${authToken}`);
     }
     const response = await fetch(`${API_BASE}${path}`, { ...options, headers });
-    if (response.status === 401 || response.status === 403) {
+    if (AUTH_ENABLED && (response.status === 401 || response.status === 403)) {
       if (path !== "/api/auth/me") {
         clearSession();
       }
@@ -636,6 +672,10 @@ function App() {
   }
 
   async function logout() {
+    if (!AUTH_ENABLED) {
+      setAccountMenuOpen(false);
+      return;
+    }
     if (authToken) {
       await apiFetch("/api/auth/logout", { method: "POST" }).catch(() => undefined);
     }
@@ -848,6 +888,11 @@ function App() {
   }
 
   useEffect(() => {
+    if (!AUTH_ENABLED) {
+      setAuthLoading(false);
+      setUser(DEV_USER);
+      return;
+    }
     if (!authToken) {
       setAuthLoading(false);
       return;
@@ -1063,7 +1108,7 @@ function App() {
     );
   }
 
-  if (!user) {
+  if (AUTH_ENABLED && !user) {
     return (
       <main className="auth-shell">
         <section className="auth-card">
@@ -1113,7 +1158,7 @@ function App() {
     );
   }
 
-  const currentUser = user;
+  const currentUser = user ?? DEV_USER;
 
   return (
     <main className="shell">
@@ -1199,10 +1244,12 @@ function App() {
                     <small>+91 900985591</small>
                   </span>
                 </a>
-                <button type="button" onClick={logout}>
-                  <LogOut size={16} />
-                  Sign out
-                </button>
+                {AUTH_ENABLED && (
+                  <button type="button" onClick={logout}>
+                    <LogOut size={16} />
+                    Sign out
+                  </button>
+                )}
               </div>
             </div>
           )}

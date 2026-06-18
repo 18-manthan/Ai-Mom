@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from fastapi import Depends, Header, HTTPException
 from sqlalchemy.orm import Session
 
+from ..config import settings
 from ..db import get_db
 from ..models import AuthSession, User
 
@@ -62,6 +63,17 @@ def current_user(
     authorization: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> User:
+    if not settings.auth_enabled:
+        return User(
+            id=0,
+            name="Manthan Chouhan",
+            email="manthanchouhan2003@gmail.com",
+            password_hash="",
+            role="user",
+            status="approved",
+            created_at=datetime.utcnow(),
+        )
+
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Login required")
 

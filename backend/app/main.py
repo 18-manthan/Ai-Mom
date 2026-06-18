@@ -68,8 +68,8 @@ class LiveSegmentRequest(BaseModel):
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
+        "http://localhost:5000",
+        "http://127.0.0.1:5000",
         "https://meet.google.com",
         "https://teams.microsoft.com",
         "https://teams.cloud.microsoft",
@@ -172,8 +172,37 @@ def _clean_list_speaker(value: str) -> str:
 
 def _is_bad_list_speaker(value: str) -> bool:
     lower = value.strip().lower()
-    return lower in {"", "participants", "language english", "english"} or bool(
-        re.fullmatch(r"[a-z]{3}-[a-z]{4}-[a-z]{3}", lower)
+    words = re.findall(r"[a-z']+", lower)
+    bad_words = {
+        "because",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "doing",
+        "done",
+        "know",
+        "said",
+        "say",
+        "should",
+        "that",
+        "that's",
+        "thats",
+        "thing",
+        "things",
+        "think",
+        "want",
+        "wants",
+        "why",
+        "would",
+    }
+    return (
+        lower in {"", "participants", "language english", "english"}
+        or bool(re.search(r"[,!?]", value))
+        or bool(re.fullmatch(r"[a-z]{3}-[a-z]{4}-[a-z]{3}", lower))
+        or not 2 <= len(words) <= 5
+        or any(word in bad_words for word in words)
     )
 
 

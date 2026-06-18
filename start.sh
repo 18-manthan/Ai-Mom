@@ -5,12 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT_DIR"
 
 BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
-BACKEND_PORT="${BACKEND_PORT:-8000}"
+BACKEND_PORT="${BACKEND_PORT:-8080}"
 FRONTEND_HOST="${FRONTEND_HOST:-0.0.0.0}"
-FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+FRONTEND_PORT="${FRONTEND_PORT:-5000}"
 UI_URL="${UI_URL:-http://127.0.0.1:${FRONTEND_PORT}}"
 API_URL="${VITE_API_BASE:-http://${BACKEND_HOST}:${BACKEND_PORT}}"
-FRONTEND_AUTH_ENABLED="${VITE_AUTH_ENABLED:-${AUTH_ENABLED:-true}}"
+FRONTEND_AUTH_ENABLED="${VITE_AUTH_ENABLED:-${AUTH_ENABLED:-false}}"
 OPEN_UI="${OPEN_UI:-true}"
 
 BACKEND_PID=""
@@ -156,7 +156,7 @@ PY
   then
     echo "$label port is already in use: ${host}:${port}"
     echo "Stop the existing service, or choose another port:"
-    echo "  BACKEND_PORT=8001 FRONTEND_PORT=5174 ./start.sh"
+    echo "  BACKEND_PORT=8081 FRONTEND_PORT=5001 ./start.sh"
     exit 1
   fi
 }

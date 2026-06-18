@@ -252,7 +252,34 @@ def _is_real_speaker_name(speaker: str) -> bool:
         return False
     if lower.startswith("language "):
         return False
-    return len(cleaned.split()) >= 2
+    if re.search(r"[,!?]", cleaned):
+        return False
+    words = re.findall(r"[a-z']+", lower)
+    bad_words = {
+        "because",
+        "can",
+        "could",
+        "did",
+        "do",
+        "does",
+        "doing",
+        "done",
+        "know",
+        "said",
+        "say",
+        "should",
+        "that",
+        "that's",
+        "thats",
+        "thing",
+        "things",
+        "think",
+        "want",
+        "wants",
+        "why",
+        "would",
+    }
+    return 2 <= len(words) <= 5 and not any(word in bad_words for word in words)
 
 
 def _normalize_speaker_label(value: str) -> str:
@@ -267,7 +294,10 @@ def _normalize_speaker_label(value: str) -> str:
             words.pop()
             continue
         break
-    return _display_speaker_name(" ".join(words))
+    display = _display_speaker_name(" ".join(words))
+    if display in {"You", "Speaker"} or _is_real_speaker_name(display):
+        return display
+    return "Speaker"
 
 
 def _split_embedded_speaker_turns(segment: dict[str, Any], known_speakers: list[str]) -> list[dict[str, Any]]:
@@ -331,7 +361,7 @@ def _distinct_speakers(segments: list[dict[str, Any]]) -> list[str]:
         if speaker == "Speaker":
             has_generic_speaker = True
             continue
-        if not speaker or speaker.lower() in {"participants", "language english"}:
+        if not speaker or not _is_real_speaker_name(speaker):
             continue
         if speaker not in speakers:
             speakers.append(speaker)
